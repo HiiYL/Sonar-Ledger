@@ -1,6 +1,12 @@
 // Shared transaction categorization logic
 // Can be used by all bank parsers
 
+import { isLLMReady, categorizeWithLLM } from '../ml';
+
+/**
+ * Categorize a transaction using rules (sync, fast)
+ * This is the default categorizer used during parsing
+ */
 export function categorizeTransaction(description: string, vendor?: string): string {
   const desc = description.toLowerCase();
   const v = vendor?.toLowerCase() || '';
@@ -158,6 +164,26 @@ export function categorizeTransaction(description: string, vendor?: string): str
   }
   
   return 'Other';
+}
+
+/**
+ * Categorize a transaction using LLM (async, more accurate)
+ * Falls back to rule-based if LLM is not available
+ */
+export async function categorizeTransactionAsync(
+  description: string,
+  vendor?: string
+): Promise<string> {
+  // Try LLM first if available
+  if (isLLMReady()) {
+    const llmCategory = await categorizeWithLLM(description, vendor);
+    if (llmCategory) {
+      return llmCategory;
+    }
+  }
+  
+  // Fall back to rule-based
+  return categorizeTransaction(description, vendor);
 }
 
 // Extract vendor name from PayNow/NETS transaction info

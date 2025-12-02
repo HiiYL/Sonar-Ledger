@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import { FileUpload } from './components/FileUpload';
 import { StatsCards } from './components/StatsCards';
 import {
@@ -9,11 +9,13 @@ import {
 } from './components/Charts';
 import { TransactionTable } from './components/TransactionTable';
 import { FileSidebar } from './components/FileSidebar';
+import { LLMStatus } from './components/LLMStatus';
 import { parseStatement } from './lib/pdfParser';
 import {
   getCategoryTotals,
   getTotalStats,
 } from './lib/summarizer';
+import { batchCategorizeWithLLM, isLLMReady } from './lib/ml';
 import type { StatementInfo } from './types';
 import { FileText, RefreshCw } from 'lucide-react';
 
@@ -25,6 +27,7 @@ function App() {
   const [categoryFilter, setCategoryFilter] = useState<string>('');
   const [periodFilter, setPeriodFilter] = useState<string>('');
   const [sourceFileFilter, setSourceFileFilter] = useState<string>('');
+  const [recategorizeProgress, setRecategorizeProgress] = useState<{ current: number; total: number } | null>(null);
 
   const handleFilesSelected = async (files: File[]) => {
     setIsLoading(true);
@@ -83,6 +86,62 @@ function App() {
   );
   const categoryTotals = getCategoryTotals(filteredStatements);
   const stats = getTotalStats(filteredStatements);
+
+  // Re-categorize all transactions using LLM
+  const handleRecategorizeAll = useCallback(async () => {
+    if (!isLLMReady() || statements.length === 0) return;
+    
+    setIsLoading(true);
+    try {
+      // Get all transactions with their indices
+      const txsToRecategorize = statements.flatMap((s, si) => 
+        s.transactions.map((tx, ti) => ({
+          statementIndex: si,
+          transactionIndex: ti,
+          description: tx.description,
+          vendor: tx.vendor,
+        }))
+      );
+      
+      const total = txsToRecategorize.length;
+      setRecategorizeProgress({ current: 0, total });
+      
+      // Process in smaller batches with progress updates
+      const BATCH_SIZE = 5;
+      const allCategories: (string | null)[] = [];
+      
+      for (let i = 0; i < txsToRecategorize.length; i += BATCH_SIZE) {
+        const batch = txsToRecategorize.slice(i, i + BATCH_SIZE);
+        const batchCategories = await batchCategorizeWithLLM(
+          batch.map(t => ({ description: t.description, vendor: t.vendor }))
+        );
+        allCategories.push(...batchCategories);
+        setRecategorizeProgress({ current: Math.min(i + BATCH_SIZE, total), total });
+      }
+      
+      // Update statements with new categories
+      setStatements(prev => {
+        const updated = [...prev];
+        txsToRecategorize.forEach((tx, i) => {
+          const newCat = allCategories[i];
+          if (newCat) {
+            updated[tx.statementIndex] = {
+              ...updated[tx.statementIndex],
+              transactions: updated[tx.statementIndex].transactions.map((t, ti) =>
+                ti === tx.transactionIndex ? { ...t, category: newCat } : t
+              ),
+            };
+          }
+        });
+        return updated;
+      });
+    } catch (err) {
+      console.error('Re-categorization failed:', err);
+    } finally {
+      setIsLoading(false);
+      setRecategorizeProgress(null);
+    }
+  }, [statements]);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -185,6 +244,12 @@ function App() {
                     </div>
                     <ExpenseInsights transactions={allTransactions} />
                   </div>
+
+                  {/* AI Categorization */}
+                  <LLMStatus 
+                    onCategorizeAll={handleRecategorizeAll} 
+                    recategorizeProgress={recategorizeProgress}
+                  />
 
                   {/* Transactions */}
                   <div>
