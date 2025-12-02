@@ -9,6 +9,7 @@ import {
 } from './components/Charts';
 import { TransactionTable } from './components/TransactionTable';
 import { FileSidebar } from './components/FileSidebar';
+import { CloudSync } from './components/CloudSync';
 import { parseStatement } from './lib/pdfParser';
 import {
   getCategoryTotals,
@@ -27,6 +28,7 @@ import {
   precomputeTransactionEmbeddings,
   categorizeWithEmbeddings,
   categorizeWithEmbeddingsFast,
+  getUserMappings,
   type ModelLoadProgress,
 } from './lib/embeddings';
 
@@ -365,6 +367,13 @@ function App() {
     setSelectedFiles(new Set());
   };
 
+  // Handle data loaded from cloud sync
+  const handleCloudDataLoaded = useCallback((loadedStatements: StatementInfo[], _mappings: Map<string, string>) => {
+    setStatements(loadedStatements);
+    setSelectedFiles(new Set(loadedStatements.map((s) => s.filename)));
+    // Note: User mappings are handled separately in the embeddings module
+  }, []);
+
   // Filter statements based on selection
   const filteredStatements = useMemo(
     () => statements.filter((s) => selectedFiles.has(s.filename)),
@@ -442,6 +451,14 @@ function App() {
                     <span className="text-sm text-red-500">AI unavailable</span>
                   )}
                 </div>
+                
+                {/* Cloud Sync */}
+                <CloudSync
+                  statements={statements}
+                  userMappings={getUserMappings()}
+                  onDataLoaded={handleCloudDataLoaded}
+                />
+                
                 <button
                   onClick={handleReset}
                   className="flex items-center gap-2 px-4 py-2 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors"

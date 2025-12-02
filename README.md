@@ -87,6 +87,28 @@ npm run build
 
 The built files will be in `frontend/dist/`.
 
+## Cloud Sync (Optional)
+
+Sync your data across devices using Google Drive. Your data is stored in your own Google Drive account (app-specific folder).
+
+### Setup Google Drive Sync
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com)
+2. Create a new project (or use existing)
+3. Enable the **Google Drive API**
+4. Go to **Credentials** > **Create Credentials** > **OAuth 2.0 Client ID**
+5. Choose **Web application**
+6. Add authorized JavaScript origins:
+   - `http://localhost:5173` (for development)
+   - `https://yourusername.github.io` (for production)
+7. Copy the Client ID
+8. Create a `.env` file in the `frontend/` directory:
+   ```
+   VITE_GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
+   ```
+
+Once configured, you'll see sync buttons in the header when you have statements loaded.
+
 ## Privacy
 
 **Your data stays on your device.** This app:
@@ -94,6 +116,7 @@ The built files will be in `frontend/dist/`.
 - ✅ Never uploads your financial data to any server
 - ✅ Has no backend or database
 - ✅ Can work completely offline after initial load
+- ✅ Optional Google Drive sync stores data in YOUR account only
 
 ## Project Structure
 
