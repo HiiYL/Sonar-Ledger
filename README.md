@@ -4,7 +4,10 @@
 
 ![Privacy First](https://img.shields.io/badge/Privacy-First-green) ![React](https://img.shields.io/badge/React-18-blue) ![TypeScript](https://img.shields.io/badge/TypeScript-5-blue) ![AI Powered](https://img.shields.io/badge/AI-Powered-purple)
 
-**Live Demo:** https://hiiyl.github.io/Sonar-Ledger/
+**Check it Out!** https://hiiyl.github.io/Sonar-Ledger/
+
+<img width="1512" height="859" alt="Screenshot 2025-12-03 at 12 37 02 AM" src="https://github.com/user-attachments/assets/2d818704-d289-44fe-9240-bbe0a87bed8a" />
+
 
 ## Features
 
