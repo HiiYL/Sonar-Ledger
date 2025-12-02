@@ -74,31 +74,29 @@ export function CloudSync({ statements, userMappings, onDataLoaded }: CloudSyncP
     
     const syncStatus = await checkSyncStatus();
     
+    console.log('[CloudSync] performAutoSync:', { syncStatus, statementsCount: statements.length });
+    
     if (syncStatus === 'cloud') {
-      // Cloud is newer - show conflict or auto-load if no local data
-      if (statements.length === 0) {
-        // No local data, just load from cloud
-        setStatus('syncing');
-        setMessage('Loading from cloud...');
-        const data = await loadFromGoogleDrive();
-        if (data) {
-          const { statements: loadedStmts, mappings } = parseCloudData(data);
-          setLocalModifiedTime(Date.now());
-          onDataLoaded(loadedStmts, mappings);
-          setStatus('success');
-          setMessage('Synced from cloud');
-          setTimeout(() => setStatus('idle'), 2000);
-        } else {
-          setStatus('idle');
-        }
+      // Cloud is newer than local - auto-pull
+      // checkSyncStatus returns 'cloud' only when cloudTime > localTime + buffer
+      // This means local hasn't been modified since last sync, safe to pull
+      console.log('[CloudSync] Cloud is newer, auto-pulling...');
+      setStatus('syncing');
+      setMessage('Loading from cloud...');
+      const data = await loadFromGoogleDrive();
+      if (data) {
+        const { statements: loadedStmts, mappings } = parseCloudData(data);
+        setLocalModifiedTime(Date.now());
+        onDataLoaded(loadedStmts, mappings);
+        setStatus('success');
+        setMessage('Synced from cloud');
+        setTimeout(() => setStatus('idle'), 2000);
       } else {
-        // Local has data, cloud is newer - show conflict
-        setConflict('cloud');
-        setStatus('conflict');
-        setMessage('Cloud has newer data');
+        setStatus('idle');
       }
     } else if (syncStatus === 'local' && statements.length > 0) {
       // Local is newer - auto-push to cloud
+      console.log('[CloudSync] Local is newer, pushing to cloud...');
       setStatus('syncing');
       setMessage('Syncing to cloud...');
       const data = serializeStatements(statements, userMappings);
@@ -130,13 +128,16 @@ export function CloudSync({ statements, userMappings, onDataLoaded }: CloudSyncP
         setSignedIn(isNowSignedIn);
         
         if (isNowSignedIn) {
-          // Auto-load from cloud on startup if signed in
+          // Check sync status on startup
           console.log('[CloudSync] Signed in, checking cloud...');
           const syncNeeded = await checkSyncStatus();
           console.log('[CloudSync] Sync status:', syncNeeded);
           
           if (syncNeeded === 'cloud') {
-            // Cloud has data, load it
+            // Cloud is newer - auto-pull (this means local hasn't changed since last sync)
+            // checkSyncStatus returns 'cloud' only when cloudTime > localTime
+            // which means no local changes were made after last sync
+            console.log('[CloudSync] Cloud is newer, auto-pulling...');
             setStatus('syncing');
             setMessage('Loading from cloud...');
             const data = await loadFromGoogleDrive();
@@ -150,6 +151,9 @@ export function CloudSync({ statements, userMappings, onDataLoaded }: CloudSyncP
             } else if (mounted) {
               setStatus('idle');
             }
+          } else if (syncNeeded === 'local') {
+            // Local is newer - will auto-push when statements are available
+            console.log('[CloudSync] Local is newer, will sync after statements load');
           }
         }
       }
