@@ -73,6 +73,26 @@ export type SyncData = {
 
 export type SyncStatus = 'idle' | 'loading' | 'syncing' | 'success' | 'error';
 
+// Track local modification time
+const LOCAL_MODIFIED_KEY = 'sonar-ledger-local-modified';
+
+export function getLocalModifiedTime(): number {
+  try {
+    const stored = localStorage.getItem(LOCAL_MODIFIED_KEY);
+    return stored ? parseInt(stored, 10) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function setLocalModifiedTime(time: number = Date.now()): void {
+  try {
+    localStorage.setItem(LOCAL_MODIFIED_KEY, time.toString());
+  } catch {
+    // Ignore
+  }
+}
+
 /**
  * Load the Google API client library
  */
@@ -148,10 +168,37 @@ export function isGoogleDriveAvailable(): boolean {
 }
 
 /**
- * Check if user is signed in
+ * Check if user is signed in (has a cached token)
  */
 export function isSignedIn(): boolean {
   return !!accessToken;
+}
+
+/**
+ * Try to restore session from cached token (silent, no prompt)
+ * Returns true if we have a valid cached token
+ */
+export async function tryRestoreSession(): Promise<boolean> {
+  // If we already have a token from localStorage, try to use it
+  if (accessToken && tokenClient) {
+    // Verify token is still valid by making a simple API call
+    try {
+      const response = await fetch('https://www.googleapis.com/drive/v3/about?fields=user', {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (response.ok) {
+        return true;
+      }
+      // Token invalid, clear it
+      accessToken = null;
+      clearCachedToken();
+    } catch {
+      // Token invalid
+      accessToken = null;
+      clearCachedToken();
+    }
+  }
+  return false;
 }
 
 /**
@@ -164,20 +211,21 @@ export async function signIn(): Promise<boolean> {
   }
 
   return new Promise((resolve) => {
-    tokenClient!.callback = (response) => {
+    tokenClient!.callback = (response: { access_token?: string; expires_in?: number }) => {
       if (response.access_token) {
         accessToken = response.access_token;
+        cacheToken(response.access_token, response.expires_in || 3600);
         resolve(true);
       } else {
         resolve(false);
       }
     };
 
-    if (accessToken === null) {
+    if (!accessToken) {
       // First time - prompt for consent
       tokenClient!.requestAccessToken({ prompt: 'consent' });
     } else {
-      // Already have token - just refresh
+      // Already have token - just refresh silently
       tokenClient!.requestAccessToken({ prompt: '' });
     }
   });
@@ -311,8 +359,8 @@ export async function loadFromGoogleDrive(): Promise<SyncData | null> {
 /**
  * Get last modified time of the data file
  */
-export async function getLastModified(): Promise<Date | null> {
-  if (!accessToken) return null;
+export async function getCloudModifiedTime(): Promise<number> {
+  if (!accessToken) return 0;
 
   try {
     const response = await gapi.client.drive.files.list({
@@ -323,11 +371,35 @@ export async function getLastModified(): Promise<Date | null> {
 
     const files = response.result.files;
     if (files && files.length > 0 && files[0].modifiedTime) {
-      return new Date(files[0].modifiedTime);
+      return new Date(files[0].modifiedTime).getTime();
     }
-    return null;
+    return 0;
   } catch (err) {
-    console.error('Error getting last modified:', err);
-    return null;
+    console.error('Error getting cloud modified time:', err);
+    return 0;
   }
+}
+
+export type ConflictResolution = 'local' | 'cloud' | 'none';
+
+/**
+ * Check sync status and determine if sync is needed
+ * Returns: 'local' if local is newer, 'cloud' if cloud is newer, 'none' if in sync
+ */
+export async function checkSyncStatus(): Promise<ConflictResolution> {
+  if (!accessToken) return 'none';
+  
+  const localTime = getLocalModifiedTime();
+  const cloudTime = await getCloudModifiedTime();
+  
+  // 5 second buffer to avoid race conditions
+  const BUFFER_MS = 5000;
+  
+  if (localTime > cloudTime + BUFFER_MS) {
+    return 'local'; // Local is newer, should push to cloud
+  } else if (cloudTime > localTime + BUFFER_MS) {
+    return 'cloud'; // Cloud is newer, should pull from cloud
+  }
+  
+  return 'none'; // In sync
 }

@@ -1,13 +1,18 @@
-import { useState, useEffect } from 'react';
-import { Cloud, CloudOff, RefreshCw, Check, AlertCircle } from 'lucide-react';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { Cloud, CloudOff, RefreshCw, Check, AlertCircle, AlertTriangle } from 'lucide-react';
 import {
   initGoogleApi,
   isSignedIn,
+  tryRestoreSession,
   signIn,
   signOut,
   saveToGoogleDrive,
   loadFromGoogleDrive,
+  checkSyncStatus,
+  setLocalModifiedTime,
+  getLocalModifiedTime,
   type SyncData,
+  type ConflictResolution,
 } from '../lib/googleDrive';
 import type { StatementInfo } from '../types';
 
@@ -17,22 +22,141 @@ interface CloudSyncProps {
   onDataLoaded: (statements: StatementInfo[], mappings: Map<string, string>) => void;
 }
 
-type SyncStatus = 'idle' | 'loading' | 'syncing' | 'success' | 'error';
+type SyncStatus = 'idle' | 'loading' | 'syncing' | 'success' | 'error' | 'conflict';
 
 export function CloudSync({ statements, userMappings, onDataLoaded }: CloudSyncProps) {
   const [available, setAvailable] = useState(false);
   const [signedIn, setSignedIn] = useState(false);
   const [status, setStatus] = useState<SyncStatus>('idle');
   const [message, setMessage] = useState('');
+  const [conflict, setConflict] = useState<ConflictResolution>('none');
+  const lastStatementsRef = useRef<string>('');
+  const autoSyncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Parse cloud data to statements
+  const parseCloudData = useCallback((data: SyncData): { statements: StatementInfo[]; mappings: Map<string, string> } => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const loadedStatements: StatementInfo[] = (data.statements as any[]).map((stmt) => ({
+      ...stmt,
+      periodStart: new Date(stmt.periodStart),
+      periodEnd: new Date(stmt.periodEnd),
+      transactions: stmt.transactions.map((tx: Record<string, unknown>) => ({
+        ...tx,
+        date: new Date(tx.date as string),
+      })),
+    }));
+    const loadedMappings = new Map(Object.entries(data.userMappings || {}));
+    return { statements: loadedStatements, mappings: loadedMappings };
+  }, []);
+
+  // Serialize statements for comparison and saving
+  const serializeStatements = useCallback((stmts: StatementInfo[], mappings: Map<string, string>): SyncData => {
+    const serializedStatements = stmts.map((stmt) => ({
+      ...stmt,
+      periodStart: stmt.periodStart.toISOString(),
+      periodEnd: stmt.periodEnd.toISOString(),
+      transactions: stmt.transactions.map((tx) => ({
+        ...tx,
+        date: tx.date.toISOString(),
+      })),
+    }));
+    return {
+      statements: serializedStatements,
+      userMappings: Object.fromEntries(mappings),
+      version: 1,
+      lastModified: new Date().toISOString(),
+    };
+  }, []);
+
+  // Auto-sync: check for conflicts and sync
+  const performAutoSync = useCallback(async () => {
+    if (!signedIn || status === 'syncing' || status === 'conflict') return;
+    
+    const syncStatus = await checkSyncStatus();
+    
+    if (syncStatus === 'cloud') {
+      // Cloud is newer - show conflict or auto-load if no local data
+      if (statements.length === 0) {
+        // No local data, just load from cloud
+        setStatus('syncing');
+        setMessage('Loading from cloud...');
+        const data = await loadFromGoogleDrive();
+        if (data) {
+          const { statements: loadedStmts, mappings } = parseCloudData(data);
+          setLocalModifiedTime(Date.now());
+          onDataLoaded(loadedStmts, mappings);
+          setStatus('success');
+          setMessage('Synced from cloud');
+          setTimeout(() => setStatus('idle'), 2000);
+        } else {
+          setStatus('idle');
+        }
+      } else {
+        // Local has data, cloud is newer - show conflict
+        setConflict('cloud');
+        setStatus('conflict');
+        setMessage('Cloud has newer data');
+      }
+    } else if (syncStatus === 'local' && statements.length > 0) {
+      // Local is newer - auto-push to cloud
+      setStatus('syncing');
+      setMessage('Syncing to cloud...');
+      const data = serializeStatements(statements, userMappings);
+      const success = await saveToGoogleDrive(data);
+      if (success) {
+        setLocalModifiedTime(Date.now());
+        setStatus('success');
+        setMessage('Synced');
+        setTimeout(() => setStatus('idle'), 2000);
+      } else {
+        setStatus('error');
+        setMessage('Sync failed');
+      }
+    }
+  }, [signedIn, status, statements, userMappings, onDataLoaded, parseCloudData, serializeStatements]);
+
+  // Initialize and check sync on mount
   useEffect(() => {
-    initGoogleApi().then((success) => {
+    initGoogleApi().then(async (success) => {
       setAvailable(success);
       if (success) {
-        setSignedIn(isSignedIn());
+        // Try to restore session from cached token
+        const restored = await tryRestoreSession();
+        setSignedIn(restored || isSignedIn());
+        
+        if (restored || isSignedIn()) {
+          // Check sync status on load
+          setTimeout(() => performAutoSync(), 1000);
+        }
       }
     });
   }, []);
+
+  // Auto-sync when statements change (debounced)
+  useEffect(() => {
+    if (!signedIn || statements.length === 0) return;
+    
+    const currentHash = JSON.stringify(statements.map(s => s.filename + s.transactions.length));
+    if (currentHash === lastStatementsRef.current) return;
+    lastStatementsRef.current = currentHash;
+    
+    // Mark local as modified
+    setLocalModifiedTime(Date.now());
+    
+    // Debounce auto-sync (wait 3 seconds after last change)
+    if (autoSyncTimeoutRef.current) {
+      clearTimeout(autoSyncTimeoutRef.current);
+    }
+    autoSyncTimeoutRef.current = setTimeout(() => {
+      performAutoSync();
+    }, 3000);
+    
+    return () => {
+      if (autoSyncTimeoutRef.current) {
+        clearTimeout(autoSyncTimeoutRef.current);
+      }
+    };
+  }, [signedIn, statements, performAutoSync]);
 
   const handleSignIn = async () => {
     setStatus('loading');
@@ -48,33 +172,73 @@ export function CloudSync({ statements, userMappings, onDataLoaded }: CloudSyncP
     signOut();
     setSignedIn(false);
     setMessage('');
+    setConflict('none');
   };
 
   const handleSave = async () => {
     setStatus('syncing');
     setMessage('Saving to Google Drive...');
 
-    // Convert statements to serializable format
-    const serializedStatements = statements.map((stmt) => ({
-      ...stmt,
-      transactions: stmt.transactions.map((tx) => ({
-        ...tx,
-        date: tx.date.toISOString(),
-      })),
-    }));
-
-    const data: SyncData = {
-      statements: serializedStatements,
-      userMappings: Object.fromEntries(userMappings),
-      version: 1,
-      lastModified: new Date().toISOString(),
-    };
-
+    const data = serializeStatements(statements, userMappings);
     const success = await saveToGoogleDrive(data);
-    setStatus(success ? 'success' : 'error');
-    setMessage(success ? 'Saved to Google Drive' : 'Failed to save');
-
+    
     if (success) {
+      setLocalModifiedTime(Date.now());
+      setStatus('success');
+      setMessage('Saved');
+      setConflict('none');
+      setTimeout(() => setStatus('idle'), 2000);
+    } else {
+      setStatus('error');
+      setMessage('Failed to save');
+    }
+  };
+
+  // Smart sync: pull if no local changes, push if local is newer
+  const handleSmartSync = async () => {
+    setStatus('syncing');
+    setMessage('Checking...');
+    
+    const syncStatus = await checkSyncStatus();
+    const localModified = getLocalModifiedTime();
+    
+    if (syncStatus === 'cloud' || (syncStatus === 'none' && localModified === 0)) {
+      // Cloud is newer or no local data - pull
+      setMessage('Loading from cloud...');
+      const data = await loadFromGoogleDrive();
+      if (data) {
+        const { statements: loadedStmts, mappings } = parseCloudData(data);
+        setLocalModifiedTime(Date.now());
+        onDataLoaded(loadedStmts, mappings);
+        setStatus('success');
+        setMessage('Loaded from cloud');
+        setConflict('none');
+        setTimeout(() => setStatus('idle'), 2000);
+      } else {
+        // No cloud data, nothing to do
+        setStatus('success');
+        setMessage('In sync');
+        setTimeout(() => setStatus('idle'), 2000);
+      }
+    } else if (syncStatus === 'local' && statements.length > 0) {
+      // Local is newer - push
+      setMessage('Saving to cloud...');
+      const data = serializeStatements(statements, userMappings);
+      const success = await saveToGoogleDrive(data);
+      if (success) {
+        setLocalModifiedTime(Date.now());
+        setStatus('success');
+        setMessage('Saved to cloud');
+        setConflict('none');
+        setTimeout(() => setStatus('idle'), 2000);
+      } else {
+        setStatus('error');
+        setMessage('Failed to save');
+      }
+    } else {
+      // Already in sync
+      setStatus('success');
+      setMessage('In sync');
       setTimeout(() => setStatus('idle'), 2000);
     }
   };
@@ -86,28 +250,32 @@ export function CloudSync({ statements, userMappings, onDataLoaded }: CloudSyncP
     const data = await loadFromGoogleDrive();
     
     if (data) {
-      // Convert all dates back to Date objects (they're serialized as ISO strings)
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const loadedStatements: StatementInfo[] = (data.statements as any[]).map((stmt) => ({
-        ...stmt,
-        periodStart: new Date(stmt.periodStart),
-        periodEnd: new Date(stmt.periodEnd),
-        transactions: stmt.transactions.map((tx: Record<string, unknown>) => ({
-          ...tx,
-          date: new Date(tx.date as string),
-        })),
-      }));
-
-      const loadedMappings = new Map(Object.entries(data.userMappings || {}));
-      
-      onDataLoaded(loadedStatements, loadedMappings);
+      const { statements: loadedStmts, mappings } = parseCloudData(data);
+      setLocalModifiedTime(Date.now());
+      onDataLoaded(loadedStmts, mappings);
       setStatus('success');
-      setMessage(`Loaded ${loadedStatements.length} statements`);
+      setMessage(`Loaded ${loadedStmts.length} statements`);
+      setConflict('none');
       setTimeout(() => setStatus('idle'), 2000);
     } else {
       setStatus('error');
-      setMessage('No data found or failed to load');
+      setMessage('No data found');
     }
+  };
+
+  // Handle conflict resolution
+  const handleUseCloud = async () => {
+    await handleLoad();
+  };
+
+  const handleUseLocal = async () => {
+    await handleSave();
+  };
+
+  const handleDismissConflict = () => {
+    setConflict('none');
+    setStatus('idle');
+    setMessage('');
   };
 
   if (!available) {
@@ -138,6 +306,35 @@ export function CloudSync({ statements, userMappings, onDataLoaded }: CloudSyncP
 
   return (
     <div className="flex items-center gap-2">
+      {/* Conflict resolution UI */}
+      {status === 'conflict' && conflict === 'cloud' && (
+        <div className="flex items-center gap-2 text-amber-600 text-sm">
+          <AlertTriangle className="w-4 h-4" />
+          <span className="hidden sm:inline">Cloud newer</span>
+          <button
+            onClick={handleUseCloud}
+            className="px-2 py-0.5 text-xs bg-amber-100 hover:bg-amber-200 rounded"
+            title="Replace local with cloud data"
+          >
+            Use Cloud
+          </button>
+          <button
+            onClick={handleUseLocal}
+            className="px-2 py-0.5 text-xs bg-gray-100 hover:bg-gray-200 rounded"
+            title="Overwrite cloud with local data"
+          >
+            Keep Local
+          </button>
+          <button
+            onClick={handleDismissConflict}
+            className="p-0.5 text-gray-400 hover:text-gray-600"
+            title="Dismiss"
+          >
+            ×
+          </button>
+        </div>
+      )}
+
       {/* Status indicator */}
       {status === 'syncing' && (
         <div className="flex items-center gap-1 text-blue-600 text-sm">
@@ -158,25 +355,20 @@ export function CloudSync({ statements, userMappings, onDataLoaded }: CloudSyncP
         </div>
       )}
 
-      {/* Sync buttons */}
+      {/* Sync buttons - only show when idle */}
       {status === 'idle' && (
         <>
+          <div className="flex items-center text-green-600" title="Auto-sync enabled">
+            <Cloud className="w-4 h-4" />
+            <Check className="w-3 h-3 -ml-2 -mt-2" />
+          </div>
           <button
-            onClick={handleLoad}
+            onClick={handleSmartSync}
             className="flex items-center gap-1.5 px-2 py-1 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded transition-colors"
-            title="Load from Google Drive"
+            title="Sync with Google Drive (pulls if no local changes, pushes if local is newer)"
           >
-            <Cloud className="w-4 h-4" />
-            <span className="hidden sm:inline">Load</span>
-          </button>
-          <button
-            onClick={handleSave}
-            disabled={statements.length === 0}
-            className="flex items-center gap-1.5 px-2 py-1 text-sm text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded transition-colors disabled:opacity-50"
-            title="Save to Google Drive"
-          >
-            <Cloud className="w-4 h-4" />
-            <span className="hidden sm:inline">Save</span>
+            <RefreshCw className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Sync</span>
           </button>
           <button
             onClick={handleSignOut}
