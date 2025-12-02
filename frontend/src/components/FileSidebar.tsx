@@ -27,13 +27,15 @@ function formatPeriod(start: Date): string {
 const INTERNAL_TRANSFER_CATEGORIES = ['Credit Card Payment', 'Investments', 'Savings'];
 
 function getFileStats(statement: StatementInfo) {
-  const inflow = statement.transactions
+  // Filter out hidden transactions to match the top bar stats
+  const visibleTx = statement.transactions.filter((t) => !t.hidden);
+  const inflow = visibleTx
     .filter((t) => t.amount > 0 && !INTERNAL_TRANSFER_CATEGORIES.includes(t.category || ''))
     .reduce((sum, t) => sum + t.amount, 0);
-  const outflow = statement.transactions
+  const outflow = visibleTx
     .filter((t) => t.amount < 0 && !INTERNAL_TRANSFER_CATEGORIES.includes(t.category || ''))
     .reduce((sum, t) => sum + Math.abs(t.amount), 0);
-  return { inflow, outflow, count: statement.transactions.length };
+  return { inflow, outflow, count: visibleTx.length };
 }
 
 // Get date range string
@@ -62,16 +64,6 @@ export function FileSidebar({
 
   const allSelected = selectedFiles.size === statements.length;
   const noneSelected = selectedFiles.size === 0;
-
-  // Calculate totals for selected files (excluding internal transfers)
-  const selectedStatements = statements.filter((s) => selectedFiles.has(s.filename));
-  const allSelectedTx = selectedStatements.flatMap((s) => s.transactions);
-  const totalInflow = allSelectedTx
-    .filter((t) => t.amount > 0 && !INTERNAL_TRANSFER_CATEGORIES.includes(t.category || ''))
-    .reduce((sum, t) => sum + t.amount, 0);
-  const totalOutflow = allSelectedTx
-    .filter((t) => t.amount < 0 && !INTERNAL_TRANSFER_CATEGORIES.includes(t.category || ''))
-    .reduce((sum, t) => sum + Math.abs(t.amount), 0);
 
   return (
     <div className="w-72 bg-white border border-gray-200 rounded-xl shadow-sm flex flex-col h-[calc(100vh-8rem)] overflow-hidden">
@@ -211,33 +203,6 @@ export function FileSidebar({
             </div>
           </div>
         )}
-      </div>
-
-      {/* Summary footer - shows selected totals */}
-      <div className="p-3 border-t border-gray-200 bg-gray-50/80 backdrop-blur-sm">
-        <div className="text-xs font-medium text-gray-600 mb-2">Selected Summary</div>
-        <div className="grid grid-cols-2 gap-2">
-          <div className="bg-green-50 rounded-lg p-2">
-            <div className="text-xs text-green-600">Income</div>
-            <div className="text-sm font-semibold text-green-700">
-              {formatCurrency(totalInflow)}
-            </div>
-          </div>
-          <div className="bg-red-50 rounded-lg p-2">
-            <div className="text-xs text-red-600">Expenses</div>
-            <div className="text-sm font-semibold text-red-700">
-              {formatCurrency(totalOutflow)}
-            </div>
-          </div>
-        </div>
-        <div className="mt-2 pt-2 border-t border-gray-200">
-          <div className="flex justify-between text-xs text-gray-500">
-            <span>Net Flow</span>
-            <span className={`font-semibold ${totalInflow - totalOutflow >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-              {formatCurrency(totalInflow - totalOutflow)}
-            </span>
-          </div>
-        </div>
       </div>
     </div>
   );
