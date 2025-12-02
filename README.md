@@ -1,43 +1,54 @@
 # Sonar Ledger
 
-**Privacy-first statement intelligence for your bank & credit card PDFs.** Sonar Ledger scans your UOB statements entirely in the browser, categorizes PayNow / NETS vendors, and turns raw PDFs into insight without ever uploading sensitive data.
+**Privacy-first statement intelligence for your bank & credit card PDFs.** Sonar Ledger processes your statements entirely in the browser, uses AI to categorize transactions, and turns raw PDFs into actionable insights — without ever uploading your sensitive financial data.
 
-![Sonar Ledger](https://img.shields.io/badge/Privacy-First-green) ![React](https://img.shields.io/badge/React-18-blue) ![TypeScript](https://img.shields.io/badge/TypeScript-5-blue)
+![Privacy First](https://img.shields.io/badge/Privacy-First-green) ![React](https://img.shields.io/badge/React-18-blue) ![TypeScript](https://img.shields.io/badge/TypeScript-5-blue) ![AI Powered](https://img.shields.io/badge/AI-Powered-purple)
 
-View here: https://hiiyl.github.io/Sonar-Ledger/
+**Live Demo:** https://hiiyl.github.io/Sonar-Ledger/
 
 ## Features
 
-### 📊 Dashboard
-- **Stats Overview** — Income, expenses, investments, net flow, savings rate
+### 📊 Interactive Dashboard
+- **Stats Overview** — Income, expenses, investments, net flow, and savings rate at a glance
 - **Cash Flow Chart** — Visualize income vs expenses by day/week/month
-- **Category Breakdown** — Interactive pie chart showing spending by category
-- **Net Flow Trend** — Track cumulative savings over time
-- **Top Expenses** — See your largest transactions at a glance
+- **Category Breakdown** — Interactive pie chart showing spending distribution
+- **Net Flow Trend** — Track cumulative wealth over time
+- **Top Expenses** — See your largest transactions instantly
+
+### 🤖 AI-Powered Categorization
+- **Smart Categories** — Automatically categorizes transactions using an on-device AI model (MiniLM)
+- **Learn from Corrections** — Manually correct a category and the AI remembers for similar transactions
+- **Semantic Understanding** — Understands merchant names and transaction descriptions contextually
+- **No Cloud Required** — AI runs entirely in your browser
 
 ### 📁 Multi-Statement Support
-- Upload multiple bank and credit card statements
-- Filter by individual statements or combine them
-- Sidebar shows per-file metrics (income, expenses, transaction count)
+- Upload multiple bank and credit card statements at once
+- Toggle individual statements on/off to compare periods
+- Per-statement metrics (income, expenses, transaction count)
 - Automatic statement type detection (bank vs credit card)
 
-### 🔍 Transaction Analysis
-- **Smart Categorization** — Automatic categorization of transactions (Food, Transport, Shopping, etc.)
-- **Vendor Extraction** — Extracts merchant names from PayNow/NETS transactions
-- **Search & Filter** — Search by description, vendor, or category
-- **Sortable Columns** — Sort by date, amount, or category
-- **Export to CSV** — Download filtered transactions for further analysis
+### 🔍 Transaction Management
+- **Search & Filter** — Find transactions by description, vendor, or category
+- **Sortable Columns** — Sort by date, amount, category, or vendor
+- **Hide Transactions** — Exclude specific transactions from calculations
+- **Inline Editing** — Click any category to change it
+- **Export to CSV** — Download filtered transactions for spreadsheets
 
-### 🎯 Smart Filtering
-- Click on chart elements to filter transactions
-- Click on pie chart categories to see related transactions
-- Click on bar chart months to filter by time period
-- Category badges in table are clickable filters
+### 🎯 Click-to-Filter
+- Click pie chart slices to filter by category
+- Click bar chart periods to filter by month
+- Click category badges in the table to filter
+- All filters sync across charts and tables
 
-### 💡 Intelligent Handling
-- **Internal Transfers** — Credit card payments, investments, and savings are tracked separately (not counted as expenses)
-- **Year Boundaries** — Correctly handles statements spanning year boundaries (e.g., Dec-Jan)
-- **Duplicate Prevention** — Avoids double-counting when both bank and credit card statements are loaded
+### ☁️ Sync & Backup
+- **Google Drive Sync** — Auto-sync across devices using your own Google Drive
+- **JSON Export/Import** — Manual backup and restore without cloud dependency
+- **Persistent Storage** — Data saved locally between sessions
+
+### 💡 Smart Handling
+- **Internal Transfers** — Credit card payments, investments, and savings tracked separately
+- **Year Boundaries** — Correctly handles Dec-Jan statement periods
+- **Duplicate Prevention** — Avoids double-counting across bank and credit card statements
 
 ## Supported Statements
 
@@ -45,16 +56,17 @@ Currently optimized for:
 - **UOB Bank Statements** (PDF)
 - **UOB Credit Card Statements** (PDF)
 
-The parser can be extended to support other banks.
+The modular parser architecture makes it easy to add support for other banks.
 
 ## Tech Stack
 
-- **React 18** with TypeScript
-- **Vite** for fast development and builds
-- **Tailwind CSS** for styling
-- **Recharts** for data visualization
-- **PDF.js** for client-side PDF parsing
-- **Lucide React** for icons
+- **React 18** + TypeScript
+- **Vite** — Fast builds and HMR
+- **Tailwind CSS** — Utility-first styling
+- **Recharts** — Data visualization
+- **PDF.js** — Client-side PDF parsing
+- **Transformers.js** — On-device AI (MiniLM embeddings)
+- **IndexedDB** — Local data persistence
 
 ## Getting Started
 
@@ -65,15 +77,9 @@ The parser can be extended to support other banks.
 ### Installation
 
 ```bash
-# Clone the repository
 git clone https://github.com/HiiYL/Sonar-Ledger.git
-cd Sonar-Ledger
-
-# Install dependencies
-cd frontend
+cd Sonar-Ledger/frontend
 npm install
-
-# Start development server
 npm run dev
 ```
 
@@ -85,77 +91,77 @@ Open [http://localhost:5173](http://localhost:5173) in your browser.
 npm run build
 ```
 
-The built files will be in `frontend/dist/`.
+Output will be in `frontend/dist/`.
 
-## Cloud Sync (Optional)
+## Cloud Sync Setup (Optional)
 
-Sync your data across devices using Google Drive. Your data is stored in your own Google Drive account (app-specific folder).
-
-### Setup Google Drive Sync
+Sync your data across devices using Google Drive. Data is stored in your own Google Drive account.
 
 1. Go to [Google Cloud Console](https://console.cloud.google.com)
-2. Create a new project (or use existing)
-3. Enable the **Google Drive API**
-4. Go to **Credentials** > **Create Credentials** > **OAuth 2.0 Client ID**
-5. Choose **Web application**
-6. Add authorized JavaScript origins:
-   - `http://localhost:5173` (for development)
-   - `https://yourusername.github.io` (for production)
-7. Copy the Client ID
-8. Create a `.env` file in the `frontend/` directory:
+2. Create a project and enable the **Google Drive API**
+3. Create **OAuth 2.0 Client ID** (Web application)
+4. Add authorized JavaScript origins:
+   - `http://localhost:5173` (development)
+   - `https://yourusername.github.io` (production)
+5. Create `frontend/.env`:
    ```
    VITE_GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
    ```
 
-Once configured, you'll see sync buttons in the header when you have statements loaded.
+For GitHub Pages deployment, add `VITE_GOOGLE_CLIENT_ID` as a repository secret.
 
 ## Privacy
 
-**Your data stays on your device.** This app:
-- ✅ Processes all PDFs locally in your browser
-- ✅ Never uploads your financial data to any server
-- ✅ Has no backend or database
-- ✅ Can work completely offline after initial load
-- ✅ Optional Google Drive sync stores data in YOUR account only
+**Your data never leaves your device.**
+
+- ✅ All PDF processing happens locally in your browser
+- ✅ AI categorization runs on-device (no API calls)
+- ✅ No backend servers or databases
+- ✅ Works offline after initial load
+- ✅ Google Drive sync uses YOUR account only (optional)
+- ✅ JSON backup is a local file you control
 
 ## Project Structure
 
 ```
-frontend/
-├── src/
-│   ├── components/
-│   │   ├── Charts.tsx        # All chart components
-│   │   ├── FileSidebar.tsx   # Statement file selector
-│   │   ├── FileUpload.tsx    # PDF upload dropzone
-│   │   ├── StatsCards.tsx    # Summary statistics
-│   │   └── TransactionTable.tsx
-│   ├── lib/
-│   │   ├── pdfParser.ts      # PDF text extraction & parsing
-│   │   └── summarizer.ts     # Data aggregation functions
-│   ├── types.ts              # TypeScript interfaces
-│   ├── App.tsx               # Main application
-│   └── main.tsx              # Entry point
-├── public/
-└── package.json
+frontend/src/
+├── components/
+│   ├── Charts.tsx          # Dashboard visualizations
+│   ├── CloudSync.tsx       # Google Drive sync UI
+│   ├── FileSidebar.tsx     # Statement selector
+│   ├── FileUpload.tsx      # PDF dropzone
+│   ├── JsonBackup.tsx      # Import/export controls
+│   ├── StatsCards.tsx      # Summary statistics
+│   └── TransactionTable.tsx
+├── lib/
+│   ├── backup.ts           # JSON serialization
+│   ├── embeddings.ts       # AI categorization engine
+│   ├── googleDrive.ts      # Drive API integration
+│   ├── pdfParser.ts        # PDF extraction
+│   ├── summarizer.ts       # Data aggregation
+│   └── parsers/
+│       ├── categorizer.ts  # Rule-based fallback
+│       └── uob.ts          # UOB statement parser
+├── types.ts
+├── App.tsx
+└── main.tsx
 ```
 
 ## Adding Support for Other Banks
 
-To add support for a new bank:
-
-1. **Identify the statement format** — Look at how dates, descriptions, and amounts are formatted
-2. **Update `detectStatementType()`** — Add keywords to identify the new bank
-3. **Create a new parser function** — Similar to `parseBankTransactions()` or `parseCreditCardTransactions()`
-4. **Update `categorizeTransaction()`** — Add any bank-specific merchant patterns
+1. Create a new parser in `lib/parsers/` (see `uob.ts` as reference)
+2. Update `detectStatementType()` in `pdfParser.ts`
+3. Add bank-specific patterns to `categorizer.ts` if needed
+4. The AI categorization will work automatically for new banks
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Contributions welcome! Feel free to open issues or submit PRs.
 
 ## License
 
-MIT License — feel free to use this for your personal finance tracking.
+MIT License — use freely for personal finance tracking.
 
 ---
 
-**Note:** This tool is for personal use. Always verify the parsed data against your actual statements.
+**Disclaimer:** This tool is for personal use. Always verify parsed data against your actual statements.
