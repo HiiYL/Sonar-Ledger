@@ -4,6 +4,8 @@
 
 ![Sonar Ledger](https://img.shields.io/badge/Privacy-First-green) ![React](https://img.shields.io/badge/React-18-blue) ![TypeScript](https://img.shields.io/badge/TypeScript-5-blue)
 
+View here: https://hiiyl.github.io/Sonar-Ledger/
+
 ## Features
 
 ### 📊 Dashboard
