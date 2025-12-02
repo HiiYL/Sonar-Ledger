@@ -1,6 +1,13 @@
 // Shared transaction categorization logic
 // Can be used by all bank parsers
+// Supports both rule-based (sync) and embedding-based (async) categorization
 
+import { categorizeWithEmbeddings, isModelReady } from '../embeddings';
+
+/**
+ * Rule-based categorization (synchronous, always available)
+ * Used as fallback when embedding model is not loaded
+ */
 export function categorizeTransaction(description: string, vendor?: string): string {
   const desc = description.toLowerCase();
   const v = vendor?.toLowerCase() || '';
@@ -31,8 +38,15 @@ export function categorizeTransaction(description: string, vendor?: string): str
   if (desc.includes('credit card') || desc.includes('card payment') ||
       desc.includes('uob card') || desc.includes('dbs card') ||
       desc.includes('ocbc card') || desc.includes('citi card') ||
-      desc.includes('amex') || desc.includes('american express')) {
+      desc.includes('amex') || desc.includes('american express') ||
+      desc.includes('paymt thru') || desc.includes('e-bank') || desc.includes('cyberb')) {
     return 'Credit Card Payment';
+  }
+  
+  // Credit card rebates/cashback (income-like)
+  if (desc.includes('rebate') || desc.includes('cashback') || desc.includes('cash back') ||
+      desc.includes('reward') || desc.includes('one card additional')) {
+    return 'Income';
   }
   
   // Food & Dining
@@ -158,6 +172,48 @@ export function categorizeTransaction(description: string, vendor?: string): str
   }
   
   return 'Other';
+}
+
+/**
+ * Smart categorization - uses embeddings if model is ready, otherwise falls back to rules
+ * This is async and should be used for re-categorization or batch processing
+ */
+export async function categorizeTransactionSmart(
+  description: string,
+  vendor?: string
+): Promise<{ category: string; confidence: number; method: 'embedding' | 'rules' }> {
+  // Try embedding-based categorization if model is ready
+  if (isModelReady()) {
+    const result = await categorizeWithEmbeddings(description, vendor);
+    
+    // If embedding confidence is too low, fall back to rules
+    if (result.confidence < 0.25) {
+      const ruleCategory = categorizeTransaction(description, vendor);
+      return { category: ruleCategory, confidence: 0, method: 'rules' };
+    }
+    
+    return { ...result, method: 'embedding' };
+  }
+  
+  // Fall back to rule-based categorization
+  const category = categorizeTransaction(description, vendor);
+  return { category, confidence: 0, method: 'rules' };
+}
+
+/**
+ * Batch re-categorize transactions using the smart categorizer
+ */
+export async function recategorizeTransactions<T extends { description: string; vendor?: string; category?: string }>(
+  transactions: T[]
+): Promise<T[]> {
+  const results: T[] = [];
+  
+  for (const tx of transactions) {
+    const { category } = await categorizeTransactionSmart(tx.description, tx.vendor);
+    results.push({ ...tx, category });
+  }
+  
+  return results;
 }
 
 // Extract vendor name from PayNow/NETS transaction info

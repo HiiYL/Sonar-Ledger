@@ -12,7 +12,7 @@ function isInternalTransfer(tx: Transaction): boolean {
 }
 
 export function aggregateByMonth(statements: StatementInfo[]): MonthlySummary[] {
-  const allTransactions = statements.flatMap((s) => s.transactions);
+  const allTransactions = statements.flatMap((s) => s.transactions).filter((tx) => !tx.hidden);
   const byMonth = new Map<string, Transaction[]>();
 
   for (const tx of allTransactions) {
@@ -65,7 +65,7 @@ export function getTopMerchants(
   statements: StatementInfo[],
   limit = 10
 ): { merchant: string; total: number; count: number }[] {
-  const allTransactions = statements.flatMap((s) => s.transactions);
+  const allTransactions = statements.flatMap((s) => s.transactions).filter((tx) => !tx.hidden);
   const merchantMap = new Map<string, { total: number; count: number }>();
 
   for (const tx of allTransactions) {
@@ -90,7 +90,7 @@ export function getTopMerchants(
 export function getCategoryTotals(
   statements: StatementInfo[]
 ): { category: string; total: number }[] {
-  const allTransactions = statements.flatMap((s) => s.transactions);
+  const allTransactions = statements.flatMap((s) => s.transactions).filter((tx) => !tx.hidden);
   const categoryMap = new Map<string, number>();
 
   for (const tx of allTransactions) {
@@ -117,25 +117,32 @@ export function getTotalStats(statements: StatementInfo[]): {
   totalSavings: number;
 } {
   const summaries = aggregateByMonth(statements);
-  const allTransactions = statements.flatMap((s) => s.transactions);
-  
+  const allTransactions = statements.flatMap((s) => s.transactions).filter((tx) => !tx.hidden);
+
+  // Income and consumption expenses (excluding internal transfers) come from monthly summaries
   const totalInflow = summaries.reduce((sum, s) => sum + s.totalInflow, 0);
   const totalOutflow = summaries.reduce((sum, s) => sum + s.totalOutflow, 0);
   const transactionCount = summaries.reduce((sum, s) => sum + s.transactionCount, 0);
-  
-  // Calculate asset transfers separately
+
+  // Asset transfers (Investments & Savings) are tracked separately
   const totalInvestments = allTransactions
     .filter((tx) => tx.category === 'Investments' && tx.amount < 0)
     .reduce((sum, tx) => sum + Math.abs(tx.amount), 0);
-  
+
   const totalSavings = allTransactions
     .filter((tx) => tx.category === 'Savings' && tx.amount < 0)
     .reduce((sum, tx) => sum + Math.abs(tx.amount), 0);
 
+  const totalAssetTransfers = totalInvestments + totalSavings;
+
+  // Net flow is income minus BOTH expenses and asset transfers.
+  // This makes Income ≈ Expenses + Invested + NetFlow (up to rounding).
+  const netFlow = totalInflow - (totalOutflow + totalAssetTransfers);
+
   return {
     totalInflow,
     totalOutflow,
-    netFlow: totalInflow - totalOutflow,
+    netFlow,
     transactionCount,
     avgMonthlySpend: summaries.length > 0 ? totalOutflow / summaries.length : 0,
     totalInvestments,

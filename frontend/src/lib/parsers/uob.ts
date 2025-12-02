@@ -181,6 +181,7 @@ export class UOBParser implements BankParser {
         source: 'bank',
         rawText: m.fullMatch,
         category: categorizeTransaction(fullDescription, vendor),
+        categorySource: 'rules',
       });
     }
 
@@ -195,18 +196,20 @@ export class UOBParser implements BankParser {
     const transactions: Transaction[] = [];
     const fullText = pages.join('\n');
 
-    // Credit card format: Post Date Trans Date Description Amount
-    const txRegex = /(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec))\s+(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec))\s+(.+?)\s+([\d,]+\.\d{2})(CR)?/gi;
+    // Credit card format: Post Date Trans Date Description Amount [CR]
+    // CR suffix indicates credit (positive amount)
+    const txRegex = /(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec))\s+(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec))\s+(.+?)\s+([\d,]+\.\d{2})\s*(CR)?/gi;
 
     let match;
     while ((match = txRegex.exec(fullText)) !== null) {
       const postDateStr = match[1];
       const description = match[3].trim();
       const amountStr = match[4];
-      const isCredit = !!match[5];
+      const crSuffix = match[5];
+      const isCredit = crSuffix?.toUpperCase() === 'CR';
 
-      // Skip payments and previous balance
-      if (description.includes('PAYMT THRU') || description.includes('PREVIOUS BALANCE')) continue;
+      // Skip previous balance (not a real transaction)
+      if (description.includes('PREVIOUS BALANCE')) continue;
 
       let date = new Date(`${postDateStr} ${year}`);
       const amount = parseFloat(amountStr.replace(/,/g, ''));
@@ -220,6 +223,7 @@ export class UOBParser implements BankParser {
         source: 'credit_card',
         rawText: match[0],
         category: categorizeTransaction(description),
+        categorySource: 'rules',
       });
     }
 

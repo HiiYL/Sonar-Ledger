@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react';
-import { Search, Download, ChevronDown, ChevronUp, Calendar, RefreshCw } from 'lucide-react';
+import { Search, Download, ChevronDown, ChevronUp, Calendar, RefreshCw, Edit2, Check, X, EyeOff, Eye, Users } from 'lucide-react';
 import type { Transaction } from '../types';
+import { learnUserCategory, isModelReady, findSimilarTransactions } from '../lib/embeddings';
 
 // Detect recurring transactions (same vendor/description, similar amounts, multiple occurrences)
 interface RecurringPattern {
@@ -65,6 +66,29 @@ function detectRecurringTransactions(transactions: Transaction[]): Map<string, R
   return patterns;
 }
 
+// All available categories for the dropdown
+const ALL_CATEGORIES = [
+  'Income',
+  'Investments',
+  'Savings',
+  'Credit Card Payment',
+  'Food & Dining',
+  'Groceries',
+  'Transport',
+  'Shopping',
+  'Subscriptions',
+  'Entertainment',
+  'Bills',
+  'Tax',
+  'Rent',
+  'Healthcare',
+  'Insurance',
+  'Education',
+  'P2P Transfers',
+  'Transfers',
+  'Other',
+];
+
 interface TransactionTableProps {
   transactions: Transaction[];
   initialCategoryFilter?: string;
@@ -73,6 +97,8 @@ interface TransactionTableProps {
   onPeriodFilterChange?: (period: string) => void;
   sourceFileFilter?: string;
   onSourceFileFilterChange?: (file: string) => void;
+  onCategoryUpdate?: (txIndex: number, description: string, newCategory: string) => void;
+  onToggleHidden?: (txIndex: number) => void;
 }
 
 function formatCurrency(amount: number): string {
@@ -145,7 +171,9 @@ export function TransactionTable({
   periodFilter = '',
   onPeriodFilterChange,
   sourceFileFilter = '',
-  onSourceFileFilterChange
+  onSourceFileFilterChange,
+  onCategoryUpdate,
+  onToggleHidden
 }: TransactionTableProps) {
   const [filter, setFilter] = useState('');
   const [sortField, setSortField] = useState<SortField>('date');
@@ -154,6 +182,20 @@ export function TransactionTable({
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [showRecurringOnly, setShowRecurringOnly] = useState(false);
+  const [showHidden, setShowHidden] = useState(false);
+  const [editingTxKey, setEditingTxKey] = useState<string | null>(null);
+  const [editingCategory, setEditingCategory] = useState<string>('');
+  
+  // Similar transactions modal state
+  const [similarTxModal, setSimilarTxModal] = useState<{
+    show: boolean;
+    sourceDescription: string;
+    sourceVendor?: string;
+    newCategory: string;
+    similarIndices: Array<{ index: number; similarity: number }>;
+    selectedIndices: Set<number>;
+  } | null>(null);
+  const [findingSimilar, setFindingSimilar] = useState(false);
   
   // Use external filter if provided, otherwise use internal state
   const [internalCategoryFilter, setInternalCategoryFilter] = useState('all');
@@ -218,8 +260,12 @@ export function TransactionTable({
     const matchesDate = matchesDateRange(t);
     const matchesRecurring = !showRecurringOnly || isRecurring(t);
     const matchesSourceFile = !sourceFileFilter || t.sourceFile === sourceFileFilter;
-    return matchesText && matchesCategory && matchesPeriodFilter && matchesDate && matchesRecurring && matchesSourceFile;
+    const matchesHidden = showHidden || !t.hidden;
+    return matchesText && matchesCategory && matchesPeriodFilter && matchesDate && matchesRecurring && matchesSourceFile && matchesHidden;
   });
+
+  // Count hidden transactions
+  const hiddenCount = transactions.filter((t) => t.hidden).length;
 
   const sorted = [...filtered].sort((a, b) => {
     let cmp = 0;
@@ -334,6 +380,19 @@ export function TransactionTable({
           <RefreshCw className="w-3 h-3" />
           Recurring ({recurringPatterns.size})
         </button>
+        {hiddenCount > 0 && (
+          <button
+            onClick={() => setShowHidden(!showHidden)}
+            className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+              showHidden 
+                ? 'bg-amber-100 text-amber-700' 
+                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+            }`}
+          >
+            {showHidden ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
+            Hidden ({hiddenCount})
+          </button>
+        )}
       </div>
 
       {/* Summary row */}
@@ -407,14 +466,29 @@ export function TransactionTable({
             </tr>
           </thead>
           <tbody>
-            {sorted.slice(0, showCount).map((tx, i) => (
+            {sorted.slice(0, showCount).map((tx, i) => {
+              // Find original index in the full transactions array
+              const originalIndex = transactions.findIndex(
+                (t) => t.date.getTime() === tx.date.getTime() && 
+                       t.description === tx.description && 
+                       t.amount === tx.amount
+              );
+              
+              return (
               <tr 
                 key={i} 
-                className="border-b border-gray-100 hover:bg-blue-50 group transition-colors"
+                className={`border-b border-gray-100 hover:bg-blue-50 group transition-colors ${tx.hidden ? 'opacity-50 bg-gray-50' : ''}`}
                 title={tx.sourceFile ? `From: ${tx.sourceFile}` : undefined}
               >
                 <td className="py-3 px-2 whitespace-nowrap">
-                  <div>{formatDate(tx.date)}</div>
+                  <div className="flex items-center gap-1">
+                    <span>{formatDate(tx.date)}</span>
+                    {tx.hidden && (
+                      <span title="Hidden from AI">
+                        <EyeOff className="w-3 h-3 text-amber-500" />
+                      </span>
+                    )}
+                  </div>
                   {tx.sourceFile && (
                     <button
                       onClick={(e) => {
@@ -448,12 +522,90 @@ export function TransactionTable({
                   </div>
                 </td>
                 <td className="py-3 px-2">
-                  <button
-                    onClick={() => handleCategoryChange(tx.category || 'Other')}
-                    className={`px-2 py-1 rounded-full text-xs font-medium hover:ring-2 hover:ring-offset-1 hover:ring-gray-300 transition-all ${getCategoryColor(tx.category || 'Other')}`}
-                  >
-                    {tx.category || 'Other'}
-                  </button>
+                  {editingTxKey === `${tx.date.getTime()}-${i}` ? (
+                    <div className="flex items-center gap-1">
+                      <select
+                        value={editingCategory}
+                        onChange={(e) => setEditingCategory(e.target.value)}
+                        className="text-xs border border-gray-300 rounded px-1 py-0.5 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        autoFocus
+                      >
+                        {ALL_CATEGORIES.map((cat) => (
+                          <option key={cat} value={cat}>{cat}</option>
+                        ))}
+                      </select>
+                      <button
+                        onClick={async () => {
+                          const oldCategory = tx.category || 'Other';
+                          if (editingCategory !== oldCategory) {
+                            // Learn from user correction
+                            if (isModelReady()) {
+                              await learnUserCategory(tx.description, editingCategory);
+                              
+                              // Find similar transactions
+                              setFindingSimilar(true);
+                              const similar = await findSimilarTransactions(
+                                tx.description,
+                                tx.vendor,
+                                transactions,
+                                0.85 // High similarity threshold
+                              );
+                              setFindingSimilar(false);
+                              
+                              if (similar.length > 0) {
+                                // Show modal to apply to similar transactions
+                                setSimilarTxModal({
+                                  show: true,
+                                  sourceDescription: tx.description,
+                                  sourceVendor: tx.vendor,
+                                  newCategory: editingCategory,
+                                  similarIndices: similar,
+                                  selectedIndices: new Set(similar.map(s => s.index)),
+                                });
+                              }
+                            }
+                            // Notify parent to update the transaction
+                            onCategoryUpdate?.(i, tx.description, editingCategory);
+                          }
+                          setEditingTxKey(null);
+                        }}
+                        className="p-0.5 text-green-600 hover:bg-green-100 rounded"
+                        title="Save"
+                      >
+                        {findingSimilar ? (
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Check className="w-3.5 h-3.5" />
+                        )}
+                      </button>
+                      <button
+                        onClick={() => setEditingTxKey(null)}
+                        className="p-0.5 text-red-600 hover:bg-red-100 rounded"
+                        title="Cancel"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1 group/cat">
+                      <button
+                        onClick={() => handleCategoryChange(tx.category || 'Other')}
+                        className={`px-2 py-1 rounded-full text-xs font-medium hover:ring-2 hover:ring-offset-1 hover:ring-gray-300 transition-all ${getCategoryColor(tx.category || 'Other')}`}
+                      >
+                        {tx.category || 'Other'}
+                      </button>
+                      <button
+                        onClick={() => {
+                          setEditingTxKey(`${tx.date.getTime()}-${i}`);
+                          setEditingCategory(tx.category || 'Other');
+                        }}
+                        className="p-0.5 text-gray-400 hover:text-gray-600 opacity-0 group-hover/cat:opacity-100 transition-opacity"
+                        title="Edit category (AI will learn from your correction)"
+                      >
+                        <Edit2 className="w-3 h-3" />
+                      </button>
+                    </div>
+                  )}
                 </td>
                 <td className="py-3 px-2">
                   <span
@@ -471,10 +623,24 @@ export function TransactionTable({
                     tx.amount >= 0 ? 'text-green-600' : 'text-red-600'
                   }`}
                 >
-                  {formatCurrency(tx.amount)}
+                  <div className="flex items-center justify-end gap-2">
+                    <span>{formatCurrency(tx.amount)}</span>
+                    <button
+                      onClick={() => onToggleHidden?.(originalIndex)}
+                      className={`p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity ${
+                        tx.hidden 
+                          ? 'text-amber-600 hover:bg-amber-100' 
+                          : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'
+                      }`}
+                      title={tx.hidden ? 'Show (include in AI)' : 'Hide (exclude from AI)'}
+                    >
+                      {tx.hidden ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
                 </td>
               </tr>
-            ))}
+            );
+            })}
           </tbody>
         </table>
         {sorted.length > showCount && (
@@ -493,6 +659,109 @@ export function TransactionTable({
           </p>
         )}
       </div>
+
+      {/* Similar Transactions Modal */}
+      {similarTxModal?.show && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
+          <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full max-h-[80vh] flex flex-col">
+            {/* Header */}
+            <div className="flex items-center justify-between p-4 border-b border-gray-100">
+              <div className="flex items-center gap-2">
+                <Users className="w-5 h-5 text-blue-600" />
+                <div>
+                  <h3 className="font-semibold text-gray-900">
+                    Similar Transactions Found
+                  </h3>
+                  <p className="text-sm text-gray-500">
+                    Apply "{similarTxModal.newCategory}" to {similarTxModal.similarIndices.length} similar transaction{similarTxModal.similarIndices.length === 1 ? '' : 's'}?
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setSimilarTxModal(null)}
+                className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            
+            {/* Content */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-2">
+              {similarTxModal.similarIndices.map(({ index, similarity }) => {
+                const similarTx = transactions[index];
+                const isSelected = similarTxModal.selectedIndices.has(index);
+                return (
+                  <label
+                    key={index}
+                    className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
+                      isSelected ? 'bg-blue-50 border-blue-200' : 'bg-gray-50 border-gray-100 hover:bg-gray-100'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => {
+                        const newSelected = new Set(similarTxModal.selectedIndices);
+                        if (isSelected) {
+                          newSelected.delete(index);
+                        } else {
+                          newSelected.add(index);
+                        }
+                        setSimilarTxModal({ ...similarTxModal, selectedIndices: newSelected });
+                      }}
+                      className="mt-1"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm text-gray-500">{formatDate(similarTx.date)}</span>
+                        <span className="text-xs text-gray-400">{(similarity * 100).toFixed(0)}% similar</span>
+                      </div>
+                      <p className="font-medium text-gray-900 truncate">{similarTx.description}</p>
+                      {similarTx.vendor && (
+                        <p className="text-sm text-gray-600">{similarTx.vendor}</p>
+                      )}
+                      <div className="mt-1 flex items-center gap-2 text-xs">
+                        <span className="px-1.5 py-0.5 rounded bg-gray-200 text-gray-600">
+                          {similarTx.category || 'Other'}
+                        </span>
+                        <span className="text-gray-400">→</span>
+                        <span className="px-1.5 py-0.5 rounded bg-blue-100 text-blue-700">
+                          {similarTxModal.newCategory}
+                        </span>
+                      </div>
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+            
+            {/* Footer */}
+            <div className="p-4 border-t border-gray-100 bg-gray-50 rounded-b-xl flex gap-3">
+              <button
+                onClick={() => setSimilarTxModal(null)}
+                className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-100 transition-colors font-medium"
+              >
+                Skip
+              </button>
+              <button
+                onClick={async () => {
+                  // Apply category to all selected similar transactions
+                  for (const index of similarTxModal.selectedIndices) {
+                    const similarTx = transactions[index];
+                    await learnUserCategory(similarTx.description, similarTxModal.newCategory);
+                    onCategoryUpdate?.(index, similarTx.description, similarTxModal.newCategory);
+                  }
+                  setSimilarTxModal(null);
+                }}
+                disabled={similarTxModal.selectedIndices.size === 0}
+                className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium disabled:opacity-50"
+              >
+                Apply to {similarTxModal.selectedIndices.size} Transaction{similarTxModal.selectedIndices.size === 1 ? '' : 's'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
