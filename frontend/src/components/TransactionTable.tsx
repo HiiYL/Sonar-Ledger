@@ -1,6 +1,69 @@
-import { useState } from 'react';
-import { Search, Download, ChevronDown, ChevronUp } from 'lucide-react';
+import { useState, useMemo } from 'react';
+import { Search, Download, ChevronDown, ChevronUp, Calendar, RefreshCw } from 'lucide-react';
 import type { Transaction } from '../types';
+
+// Detect recurring transactions (same vendor/description, similar amounts, multiple occurrences)
+interface RecurringPattern {
+  key: string;
+  vendor: string;
+  avgAmount: number;
+  count: number;
+  frequency: 'weekly' | 'monthly' | 'irregular';
+  transactions: Transaction[];
+}
+
+function detectRecurringTransactions(transactions: Transaction[]): Map<string, RecurringPattern> {
+  const patterns = new Map<string, RecurringPattern>();
+  
+  // Group by vendor or description prefix
+  const groups = new Map<string, Transaction[]>();
+  for (const tx of transactions) {
+    if (tx.amount >= 0) continue; // Only expenses
+    const key = tx.vendor?.toLowerCase() || tx.description.toLowerCase().slice(0, 20);
+    if (!key || key.length < 3) continue;
+    
+    if (!groups.has(key)) {
+      groups.set(key, []);
+    }
+    groups.get(key)!.push(tx);
+  }
+  
+  // Identify recurring patterns (3+ occurrences with similar amounts)
+  for (const [key, txs] of groups) {
+    if (txs.length < 3) continue;
+    
+    const amounts = txs.map((t) => Math.abs(t.amount));
+    const avgAmount = amounts.reduce((a, b) => a + b, 0) / amounts.length;
+    const variance = amounts.reduce((sum, a) => sum + Math.pow(a - avgAmount, 2), 0) / amounts.length;
+    const stdDev = Math.sqrt(variance);
+    
+    // If amounts are consistent (low variance relative to average)
+    if (stdDev / avgAmount < 0.3 || stdDev < 5) {
+      // Determine frequency
+      const sortedDates = txs.map((t) => t.date.getTime()).sort((a, b) => a - b);
+      const gaps: number[] = [];
+      for (let i = 1; i < sortedDates.length; i++) {
+        gaps.push((sortedDates[i] - sortedDates[i - 1]) / (1000 * 60 * 60 * 24));
+      }
+      const avgGap = gaps.length > 0 ? gaps.reduce((a, b) => a + b, 0) / gaps.length : 0;
+      
+      let frequency: 'weekly' | 'monthly' | 'irregular' = 'irregular';
+      if (avgGap >= 5 && avgGap <= 10) frequency = 'weekly';
+      else if (avgGap >= 25 && avgGap <= 35) frequency = 'monthly';
+      
+      patterns.set(key, {
+        key,
+        vendor: txs[0].vendor || txs[0].description.slice(0, 30),
+        avgAmount,
+        count: txs.length,
+        frequency,
+        transactions: txs,
+      });
+    }
+  }
+  
+  return patterns;
+}
 
 interface TransactionTableProps {
   transactions: Transaction[];
@@ -8,6 +71,8 @@ interface TransactionTableProps {
   onCategoryFilterChange?: (category: string) => void;
   periodFilter?: string;
   onPeriodFilterChange?: (period: string) => void;
+  sourceFileFilter?: string;
+  onSourceFileFilterChange?: (file: string) => void;
 }
 
 function formatCurrency(amount: number): string {
@@ -78,12 +143,17 @@ export function TransactionTable({
   initialCategoryFilter = '',
   onCategoryFilterChange,
   periodFilter = '',
-  onPeriodFilterChange
+  onPeriodFilterChange,
+  sourceFileFilter = '',
+  onSourceFileFilterChange
 }: TransactionTableProps) {
   const [filter, setFilter] = useState('');
   const [sortField, setSortField] = useState<SortField>('date');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [showCount, setShowCount] = useState(50);
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [showRecurringOnly, setShowRecurringOnly] = useState(false);
   
   // Use external filter if provided, otherwise use internal state
   const [internalCategoryFilter, setInternalCategoryFilter] = useState('all');
@@ -96,6 +166,22 @@ export function TransactionTable({
 
   const categories = [...new Set(transactions.map((t) => t.category || 'Other'))].sort();
 
+  // Detect recurring transactions
+  const recurringPatterns = useMemo(() => detectRecurringTransactions(transactions), [transactions]);
+  const recurringTxIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const pattern of recurringPatterns.values()) {
+      for (const tx of pattern.transactions) {
+        ids.add(`${tx.date.getTime()}-${tx.amount}-${tx.description}`);
+      }
+    }
+    return ids;
+  }, [recurringPatterns]);
+
+  const isRecurring = (tx: Transaction): boolean => {
+    return recurringTxIds.has(`${tx.date.getTime()}-${tx.amount}-${tx.description}`);
+  };
+
   // Helper to check if transaction matches period filter
   const matchesPeriod = (tx: Transaction, period: string): boolean => {
     if (!period) return true;
@@ -104,6 +190,20 @@ export function TransactionTable({
     const txYear = tx.date.getFullYear().toString().slice(-2);
     const txPeriod = `${txMonth} ${txYear}`;
     return txPeriod === period || period.includes(txMonth);
+  };
+
+  // Helper to check date range
+  const matchesDateRange = (tx: Transaction): boolean => {
+    if (dateFrom) {
+      const from = new Date(dateFrom);
+      if (tx.date < from) return false;
+    }
+    if (dateTo) {
+      const to = new Date(dateTo);
+      to.setHours(23, 59, 59, 999);
+      if (tx.date > to) return false;
+    }
+    return true;
   };
 
   const filtered = transactions.filter((t) => {
@@ -115,7 +215,10 @@ export function TransactionTable({
     const matchesCategory =
       categoryFilter === 'all' || t.category === categoryFilter;
     const matchesPeriodFilter = matchesPeriod(t, periodFilter);
-    return matchesText && matchesCategory && matchesPeriodFilter;
+    const matchesDate = matchesDateRange(t);
+    const matchesRecurring = !showRecurringOnly || isRecurring(t);
+    const matchesSourceFile = !sourceFileFilter || t.sourceFile === sourceFileFilter;
+    return matchesText && matchesCategory && matchesPeriodFilter && matchesDate && matchesRecurring && matchesSourceFile;
   });
 
   const sorted = [...filtered].sort((a, b) => {
@@ -159,7 +262,7 @@ export function TransactionTable({
   return (
     <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
       {/* Filters row */}
-      <div className="flex flex-col sm:flex-row gap-3 mb-4">
+      <div className="flex flex-col sm:flex-row gap-3 mb-3">
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
           <input
@@ -191,6 +294,48 @@ export function TransactionTable({
         </button>
       </div>
 
+      {/* Date range and recurring filter */}
+      <div className="flex flex-wrap items-center gap-3 mb-4">
+        <div className="flex items-center gap-2">
+          <Calendar className="w-4 h-4 text-gray-400" />
+          <input
+            type="date"
+            value={dateFrom}
+            onChange={(e) => setDateFrom(e.target.value)}
+            className="px-2 py-1 border border-gray-200 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            placeholder="From"
+          />
+          <span className="text-gray-400">–</span>
+          <input
+            type="date"
+            value={dateTo}
+            onChange={(e) => setDateTo(e.target.value)}
+            className="px-2 py-1 border border-gray-200 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            placeholder="To"
+          />
+          {(dateFrom || dateTo) && (
+            <button
+              onClick={() => { setDateFrom(''); setDateTo(''); }}
+              className="text-gray-400 hover:text-gray-600"
+              title="Clear dates"
+            >
+              ×
+            </button>
+          )}
+        </div>
+        <button
+          onClick={() => setShowRecurringOnly(!showRecurringOnly)}
+          className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+            showRecurringOnly 
+              ? 'bg-purple-100 text-purple-700' 
+              : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+          }`}
+        >
+          <RefreshCw className="w-3 h-3" />
+          Recurring ({recurringPatterns.size})
+        </button>
+      </div>
+
       {/* Summary row */}
       <div className="flex flex-wrap items-center gap-4 mb-4 text-sm">
         <span className="text-gray-500">
@@ -217,6 +362,15 @@ export function TransactionTable({
             className="flex items-center gap-1 px-2 py-1 bg-purple-100 text-purple-700 rounded-full text-xs font-medium hover:bg-purple-200"
           >
             {periodFilter}
+            <span className="ml-1">×</span>
+          </button>
+        )}
+        {sourceFileFilter && (
+          <button
+            onClick={() => onSourceFileFilterChange?.('')}
+            className="flex items-center gap-1 px-2 py-1 bg-amber-100 text-amber-700 rounded-full text-xs font-medium hover:bg-amber-200"
+          >
+            📄 {sourceFileFilter.replace(/\.[^/.]+$/, '').slice(0, 20)}
             <span className="ml-1">×</span>
           </button>
         )}
@@ -262,20 +416,36 @@ export function TransactionTable({
                 <td className="py-3 px-2 whitespace-nowrap">
                   <div>{formatDate(tx.date)}</div>
                   {tx.sourceFile && (
-                    <div className="text-[10px] text-gray-400 opacity-0 group-hover:opacity-100 transition-opacity truncate max-w-[100px]">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onSourceFileFilterChange?.(tx.sourceFile!);
+                      }}
+                      className="text-[10px] text-gray-400 opacity-0 group-hover:opacity-100 transition-opacity truncate max-w-[100px] hover:text-blue-600 hover:underline cursor-pointer"
+                      title={`Filter by: ${tx.sourceFile}`}
+                    >
                       {tx.sourceFile.replace(/\.[^/.]+$/, '').slice(0, 20)}
-                    </div>
+                    </button>
                   )}
                 </td>
                 <td className="py-3 px-2 max-w-xs" title={tx.description}>
-                  {tx.vendor ? (
-                    <div>
-                      <div className="font-medium truncate">{tx.vendor}</div>
-                      <div className="text-xs text-gray-500 truncate">{tx.description}</div>
+                  <div className="flex items-start gap-2">
+                    {isRecurring(tx) && (
+                      <span className="flex-shrink-0 mt-0.5" title="Recurring transaction">
+                        <RefreshCw className="w-3 h-3 text-purple-500" />
+                      </span>
+                    )}
+                    <div className="min-w-0">
+                      {tx.vendor ? (
+                        <>
+                          <div className="font-medium truncate">{tx.vendor}</div>
+                          <div className="text-xs text-gray-500 truncate">{tx.description}</div>
+                        </>
+                      ) : (
+                        <span className="truncate block">{tx.description}</span>
+                      )}
                     </div>
-                  ) : (
-                    <span className="truncate block">{tx.description}</span>
-                  )}
+                  </div>
                 </td>
                 <td className="py-3 px-2">
                   <button

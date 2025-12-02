@@ -5,7 +5,7 @@ import {
   SpendChart,
   CategoryPieChart,
   NetFlowTrend,
-  TopSpending,
+  ExpenseInsights,
 } from './components/Charts';
 import { TransactionTable } from './components/TransactionTable';
 import { FileSidebar } from './components/FileSidebar';
@@ -24,6 +24,7 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [categoryFilter, setCategoryFilter] = useState<string>('');
   const [periodFilter, setPeriodFilter] = useState<string>('');
+  const [sourceFileFilter, setSourceFileFilter] = useState<string>('');
 
   const handleFilesSelected = async (files: File[]) => {
     setIsLoading(true);
@@ -182,7 +183,7 @@ function App() {
                     <div className="lg:col-span-2">
                       <NetFlowTrend transactions={allTransactions} />
                     </div>
-                    <TopSpending transactions={allTransactions} limit={8} />
+                    <ExpenseInsights transactions={allTransactions} />
                   </div>
 
                   {/* Transactions */}
@@ -196,6 +197,8 @@ function App() {
                       onCategoryFilterChange={setCategoryFilter}
                       periodFilter={periodFilter}
                       onPeriodFilterChange={setPeriodFilter}
+                      sourceFileFilter={sourceFileFilter}
+                      onSourceFileFilterChange={setSourceFileFilter}
                     />
                   </div>
                 </>

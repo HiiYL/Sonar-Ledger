@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import {
   BarChart,
   Bar,
@@ -303,67 +303,197 @@ export function CategoryPieChart({ data, onCategoryClick, selectedCategory }: Ca
   );
 }
 
-// Top spending transactions
-interface TopSpendingProps {
+// Combined Expense Insights with tabs
+interface ExpenseInsightsProps {
   transactions: Transaction[];
-  limit?: number;
 }
 
-export function TopSpending({ transactions, limit = 5 }: TopSpendingProps) {
-  const topExpenses = [...transactions]
+export function ExpenseInsights({ transactions }: ExpenseInsightsProps) {
+  const [activeTab, setActiveTab] = useState<'largest' | 'recurring'>('largest');
+
+  // Top expenses
+  const topExpenses = useMemo(() => 
+    [...transactions]
+      .filter((tx) => tx.amount < 0 && !INTERNAL_TRANSFER_CATEGORIES.includes(tx.category || ''))
+      .sort((a, b) => a.amount - b.amount)
+      .slice(0, 6),
+    [transactions]
+  );
+
+  const topTotal = topExpenses.reduce((sum, tx) => sum + Math.abs(tx.amount), 0);
+  const allExpenses = transactions
     .filter((tx) => tx.amount < 0 && !INTERNAL_TRANSFER_CATEGORIES.includes(tx.category || ''))
-    .sort((a, b) => a.amount - b.amount) // Most negative first
-    .slice(0, limit);
+    .reduce((sum, tx) => sum + Math.abs(tx.amount), 0);
+  const topPercentage = allExpenses > 0 ? (topTotal / allExpenses) * 100 : 0;
+
+  // Recurring patterns
+  const patterns = useMemo(() => {
+    const groups = new Map<string, Transaction[]>();
+    
+    for (const tx of transactions) {
+      if (tx.amount >= 0) continue;
+      const key = tx.vendor?.toLowerCase() || tx.description.toLowerCase().slice(0, 20);
+      if (!key || key.length < 3) continue;
+      
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(tx);
+    }
+    
+    const result: Array<{
+      vendor: string;
+      avgAmount: number;
+      count: number;
+      frequency: string;
+      monthlyEstimate: number;
+    }> = [];
+    
+    for (const [, txs] of groups) {
+      if (txs.length < 3) continue;
+      
+      const amounts = txs.map((t) => Math.abs(t.amount));
+      const avgAmount = amounts.reduce((a, b) => a + b, 0) / amounts.length;
+      const variance = amounts.reduce((sum, a) => sum + Math.pow(a - avgAmount, 2), 0) / amounts.length;
+      const stdDev = Math.sqrt(variance);
+      
+      if (stdDev / avgAmount < 0.3 || stdDev < 5) {
+        const sortedDates = txs.map((t) => t.date.getTime()).sort((a, b) => a - b);
+        const gaps: number[] = [];
+        for (let i = 1; i < sortedDates.length; i++) {
+          gaps.push((sortedDates[i] - sortedDates[i - 1]) / (1000 * 60 * 60 * 24));
+        }
+        const avgGap = gaps.length > 0 ? gaps.reduce((a, b) => a + b, 0) / gaps.length : 30;
+        
+        let frequency = 'irregular';
+        let monthlyEstimate = avgAmount;
+        if (avgGap >= 5 && avgGap <= 10) {
+          frequency = 'weekly';
+          monthlyEstimate = avgAmount * 4;
+        } else if (avgGap >= 25 && avgGap <= 35) {
+          frequency = 'monthly';
+          monthlyEstimate = avgAmount;
+        }
+        
+        result.push({
+          vendor: txs[0].vendor || txs[0].description.slice(0, 25),
+          avgAmount,
+          count: txs.length,
+          frequency,
+          monthlyEstimate,
+        });
+      }
+    }
+    
+    return result.sort((a, b) => b.monthlyEstimate - a.monthlyEstimate);
+  }, [transactions]);
+
+  const totalMonthly = patterns.reduce((sum, p) => sum + p.monthlyEstimate, 0);
 
   if (topExpenses.length === 0) {
     return null;
   }
 
-  // Calculate total of top expenses vs all expenses
-  const topTotal = topExpenses.reduce((sum, tx) => sum + Math.abs(tx.amount), 0);
-  const allExpenses = transactions
-    .filter((tx) => tx.amount < 0 && !INTERNAL_TRANSFER_CATEGORIES.includes(tx.category || ''))
-    .reduce((sum, tx) => sum + Math.abs(tx.amount), 0);
-  const percentage = allExpenses > 0 ? (topTotal / allExpenses) * 100 : 0;
-
   return (
-    <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 h-full">
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="text-lg font-semibold">Largest Expenses</h3>
-        <span className="text-xs text-gray-500">
-          {percentage.toFixed(0)}% of total
-        </span>
+    <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 h-full flex flex-col">
+      {/* Tabs */}
+      <div className="flex gap-1 mb-3 bg-gray-100 rounded-lg p-1">
+        <button
+          onClick={() => setActiveTab('largest')}
+          className={`flex-1 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+            activeTab === 'largest'
+              ? 'bg-white text-gray-900 shadow-sm'
+              : 'text-gray-600 hover:text-gray-900'
+          }`}
+        >
+          Largest
+        </button>
+        <button
+          onClick={() => setActiveTab('recurring')}
+          className={`flex-1 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+            activeTab === 'recurring'
+              ? 'bg-white text-gray-900 shadow-sm'
+              : 'text-gray-600 hover:text-gray-900'
+          }`}
+        >
+          Recurring {patterns.length > 0 && `(${patterns.length})`}
+        </button>
       </div>
-      <div className="space-y-3">
-        {topExpenses.map((tx, i) => (
-          <div key={i} className="flex items-center justify-between">
-            <div className="flex items-center gap-3 min-w-0">
-              <span className="text-sm font-bold text-gray-300 w-5">{i + 1}</span>
-              <div className="min-w-0">
-                <p className="text-sm font-medium text-gray-900 truncate">
-                  {tx.vendor || tx.description.slice(0, 30)}
-                </p>
-                <p className="text-xs text-gray-500">
-                  {tx.date.toLocaleDateString('en-SG', { month: 'short', day: 'numeric' })}
-                  {tx.category && ` · ${tx.category}`}
-                </p>
+
+      {/* Content */}
+      <div className="flex-1 min-h-0">
+        {activeTab === 'largest' ? (
+          <>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs text-gray-500">Top expenses</span>
+              <span className="text-xs text-gray-500">{topPercentage.toFixed(0)}% of total</span>
+            </div>
+            <div className="space-y-2">
+              {topExpenses.map((tx, i) => (
+                <div key={i} className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-xs font-bold text-gray-300 w-4">{i + 1}</span>
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-gray-900 truncate">
+                        {tx.vendor || tx.description.slice(0, 25)}
+                      </p>
+                      <p className="text-xs text-gray-500">
+                        {tx.date.toLocaleDateString('en-SG', { month: 'short', day: 'numeric' })}
+                      </p>
+                    </div>
+                  </div>
+                  <span className="text-sm font-semibold text-red-600 whitespace-nowrap ml-2">
+                    {formatCurrency(tx.amount)}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <div className="mt-3 pt-3 border-t border-gray-100">
+              <div className="flex justify-between text-xs">
+                <span className="text-gray-500">Total</span>
+                <span className="font-semibold text-gray-900">{formatCurrency(-topTotal)}</span>
               </div>
             </div>
-            <span className="text-sm font-semibold text-red-600 whitespace-nowrap ml-2">
-              {formatCurrency(tx.amount)}
-            </span>
-          </div>
-        ))}
-      </div>
-      <div className="mt-4 pt-4 border-t border-gray-100">
-        <div className="flex justify-between text-sm">
-          <span className="text-gray-500">Top {limit} total</span>
-          <span className="font-semibold text-gray-900">{formatCurrency(-topTotal)}</span>
-        </div>
+          </>
+        ) : (
+          <>
+            {patterns.length > 0 ? (
+              <>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs text-gray-500">Detected subscriptions</span>
+                  <span className="text-xs text-gray-500">~{formatCurrency(totalMonthly)}/mo</span>
+                </div>
+                <div className="space-y-2">
+                  {patterns.slice(0, 6).map((p, i) => (
+                    <div key={i} className="flex items-center justify-between">
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium text-gray-900 truncate">{p.vendor}</p>
+                        <p className="text-xs text-gray-500">
+                          {p.frequency} · {p.count}×
+                        </p>
+                      </div>
+                      <span className="text-sm font-semibold text-gray-700 whitespace-nowrap ml-2">
+                        {formatCurrency(-p.avgAmount)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                {patterns.length > 6 && (
+                  <p className="text-xs text-gray-400 mt-2">
+                    +{patterns.length - 6} more
+                  </p>
+                )}
+              </>
+            ) : (
+              <p className="text-sm text-gray-500 text-center py-4">
+                No recurring expenses detected
+              </p>
+            )}
+          </>
+        )}
       </div>
     </div>
   );
 }
+
 
 interface NetFlowTrendProps {
   transactions: Transaction[];
