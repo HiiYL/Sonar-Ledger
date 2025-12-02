@@ -159,10 +159,15 @@ export function CloudSync({ statements, userMappings, onDataLoaded }: CloudSyncP
   }, [onDataLoaded, parseCloudData]);
 
   // Auto-sync when statements change (debounced)
+  // Includes category changes, hidden status, etc.
   useEffect(() => {
     if (!signedIn || statements.length === 0) return;
     
-    const currentHash = JSON.stringify(statements.map(s => s.filename + s.transactions.length));
+    // Hash includes categories and hidden status to detect changes
+    const currentHash = JSON.stringify(statements.map(s => ({
+      f: s.filename,
+      t: s.transactions.map(tx => `${tx.description}|${tx.category}|${tx.hidden}`)
+    })));
     if (currentHash === lastStatementsRef.current) return;
     lastStatementsRef.current = currentHash;
     
