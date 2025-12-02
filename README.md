@@ -1,8 +1,8 @@
-# Finance Summarizer
+# Sonar Ledger
 
-A privacy-first personal finance dashboard that analyzes your bank and credit card statements. All processing happens locally in your browser — your financial data never leaves your device.
+**Privacy-first statement intelligence for your bank & credit card PDFs.** Sonar Ledger scans your UOB statements entirely in the browser, categorizes PayNow / NETS vendors, and turns raw PDFs into insight without ever uploading sensitive data.
 
-![Finance Summarizer](https://img.shields.io/badge/Privacy-First-green) ![React](https://img.shields.io/badge/React-18-blue) ![TypeScript](https://img.shields.io/badge/TypeScript-5-blue)
+![Sonar Ledger](https://img.shields.io/badge/Privacy-First-green) ![React](https://img.shields.io/badge/React-18-blue) ![TypeScript](https://img.shields.io/badge/TypeScript-5-blue)
 
 ## Features
 
@@ -64,8 +64,8 @@ The parser can be extended to support other banks.
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/finance-summarizer.git
-cd finance-summarizer
+git clone https://github.com/HiiYL/Sonar-Ledger.git
+cd Sonar-Ledger
 
 # Install dependencies
 cd frontend
