@@ -1,5 +1,6 @@
 import type { BankParser, StatementType, StatementPeriod, Transaction } from './types';
 import { categorizeTransaction, extractPayNowVendor } from './categorizer';
+import { getMccInfo } from '../mcc';
 
 /**
  * UOB Bank Parser
@@ -195,7 +196,7 @@ export class UOBParser implements BankParser {
     const transactions: Transaction[] = [];
     const fullText = pages.join('\n');
 
-    // Credit card format: Post Date Trans Date Description Amount
+    // Credit card format: Post Date Trans Date Description Amount (optionally prefixed with MCC)
     const txRegex = /(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec))\s+(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec))\s+(.+?)\s+([\d,]+\.\d{2})(CR)?/gi;
 
     let match;
@@ -204,14 +205,20 @@ export class UOBParser implements BankParser {
       const description = match[3].trim();
       const amountStr = match[4];
       const isCredit = !!match[5];
+      const mccMatch = match[0].match(/MCC\s*(\d{4})/i);
+      const mcc = mccMatch?.[1];
 
       // Skip payments and previous balance
       if (description.includes('PAYMT THRU') || description.includes('PREVIOUS BALANCE')) continue;
 
       let date = new Date(`${postDateStr} ${year}`);
       const amount = parseFloat(amountStr.replace(/,/g, ''));
+      const mccInfo = getMccInfo(mcc);
 
       date = this.adjustDateForYearBoundary(date, postDateStr, period);
+
+      const fallbackCategory = categorizeTransaction(description);
+      const category = mccInfo?.category || fallbackCategory;
 
       transactions.push({
         date,
@@ -219,7 +226,9 @@ export class UOBParser implements BankParser {
         amount: isCredit ? amount : -amount,
         source: 'credit_card',
         rawText: match[0],
-        category: categorizeTransaction(description),
+        mcc,
+        mccDescription: mccInfo?.description,
+        category,
       });
     }
 

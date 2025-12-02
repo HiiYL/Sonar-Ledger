@@ -7,6 +7,8 @@ export interface Transaction {
   vendor?: string; // Extracted vendor/merchant name (especially for PayNow)
   source: 'bank' | 'credit_card';
   sourceFile?: string; // Original filename this transaction came from
+  mcc?: string; // Merchant category code when available
+  mccDescription?: string; // Human readable MCC description
   rawText: string;
 }
 
