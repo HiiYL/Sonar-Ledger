@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { FileUpload } from './components/FileUpload';
 import { StatsCards } from './components/StatsCards';
 import {
@@ -16,6 +16,11 @@ import {
 } from './lib/summarizer';
 import type { StatementInfo } from './types';
 import { FileText, RefreshCw } from 'lucide-react';
+import {
+  loadPersistedStatements,
+  persistStatements,
+  clearPersistedStatements,
+} from './lib/storage';
 
 function App() {
   const [statements, setStatements] = useState<StatementInfo[]>([]);
@@ -25,6 +30,43 @@ function App() {
   const [categoryFilter, setCategoryFilter] = useState<string>('');
   const [periodFilter, setPeriodFilter] = useState<string>('');
   const [sourceFileFilter, setSourceFileFilter] = useState<string>('');
+  const [isHydrated, setIsHydrated] = useState(false);
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    async function hydrate() {
+      try {
+        const persisted = await loadPersistedStatements();
+        if (isCancelled) return;
+
+        if (persisted.length > 0) {
+          setStatements(persisted);
+          setSelectedFiles(new Set(persisted.map((s) => s.filename)));
+        }
+      } catch (err) {
+        console.error('Failed to load persisted statements', err);
+      } finally {
+        if (!isCancelled) {
+          setIsHydrated(true);
+        }
+      }
+    }
+
+    hydrate();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isHydrated) return;
+
+    persistStatements(statements).catch((err) => {
+      console.error('Failed to persist statements', err);
+    });
+  }, [statements, isHydrated]);
 
   const handleFilesSelected = async (files: File[]) => {
     setIsLoading(true);
@@ -50,6 +92,9 @@ function App() {
     setStatements([]);
     setSelectedFiles(new Set());
     setError(null);
+    clearPersistedStatements().catch((err) => {
+      console.error('Failed to clear persisted statements', err);
+    });
   };
 
   const handleToggleFile = (filename: string) => {
