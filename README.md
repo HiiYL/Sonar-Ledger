@@ -6,7 +6,7 @@
 
 **Check it Out!** https://hiiyl.github.io/Sonar-Ledger/
 
-<img width="1512" height="859" alt="Screenshot 2025-12-03 at 12 37 02 AM" src="https://github.com/user-attachments/assets/2d818704-d289-44fe-9240-bbe0a87bed8a" />
+<img width="1509" height="857" alt="Screenshot 2025-12-03 at 12 48 54 AM" src="https://github.com/user-attachments/assets/280fcaa5-b1d9-42fc-a6cf-77ae510b1406" />
 
 
 ## Features
