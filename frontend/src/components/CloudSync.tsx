@@ -34,7 +34,7 @@ export function CloudSync({ statements, userMappings, onDataLoaded }: CloudSyncP
   const autoSyncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Parse cloud data to statements
-  const parseCloudData = useCallback((data: SyncData): { statements: StatementInfo[]; mappings: Map<string, string> } => {
+  const parseCloudData = (data: SyncData): { statements: StatementInfo[]; mappings: Map<string, string> } => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const loadedStatements: StatementInfo[] = (data.statements as any[]).map((stmt) => ({
       ...stmt,
@@ -47,7 +47,7 @@ export function CloudSync({ statements, userMappings, onDataLoaded }: CloudSyncP
     }));
     const loadedMappings = new Map(Object.entries(data.userMappings || {}));
     return { statements: loadedStatements, mappings: loadedMappings };
-  }, []);
+  };
 
   // Serialize statements for comparison and saving
   const serializeStatements = useCallback((stmts: StatementInfo[], mappings: Map<string, string>): SyncData => {
@@ -115,22 +115,48 @@ export function CloudSync({ statements, userMappings, onDataLoaded }: CloudSyncP
     }
   }, [signedIn, status, statements, userMappings, onDataLoaded, parseCloudData, serializeStatements]);
 
-  // Initialize and check sync on mount
+  // Initialize on mount
   useEffect(() => {
+    let mounted = true;
+    
     initGoogleApi().then(async (success) => {
+      if (!mounted) return;
       setAvailable(success);
       if (success) {
         // Try to restore session from cached token
         const restored = await tryRestoreSession();
-        setSignedIn(restored || isSignedIn());
+        if (!mounted) return;
+        const isNowSignedIn = restored || isSignedIn();
+        setSignedIn(isNowSignedIn);
         
-        if (restored || isSignedIn()) {
-          // Check sync status on load
-          setTimeout(() => performAutoSync(), 1000);
+        if (isNowSignedIn) {
+          // Auto-load from cloud on startup if signed in
+          console.log('[CloudSync] Signed in, checking cloud...');
+          const syncNeeded = await checkSyncStatus();
+          console.log('[CloudSync] Sync status:', syncNeeded);
+          
+          if (syncNeeded === 'cloud') {
+            // Cloud has data, load it
+            setStatus('syncing');
+            setMessage('Loading from cloud...');
+            const data = await loadFromGoogleDrive();
+            if (data && mounted) {
+              const { statements: loadedStmts, mappings } = parseCloudData(data);
+              setLocalModifiedTime(Date.now());
+              onDataLoaded(loadedStmts, mappings);
+              setStatus('success');
+              setMessage('Loaded from cloud');
+              setTimeout(() => mounted && setStatus('idle'), 2000);
+            } else if (mounted) {
+              setStatus('idle');
+            }
+          }
         }
       }
     });
-  }, []);
+    
+    return () => { mounted = false; };
+  }, [onDataLoaded, parseCloudData]);
 
   // Auto-sync when statements change (debounced)
   useEffect(() => {
@@ -202,10 +228,14 @@ export function CloudSync({ statements, userMappings, onDataLoaded }: CloudSyncP
     const syncStatus = await checkSyncStatus();
     const localModified = getLocalModifiedTime();
     
+    console.log('[CloudSync] handleSmartSync:', { syncStatus, localModified, statementsCount: statements.length });
+    
     if (syncStatus === 'cloud' || (syncStatus === 'none' && localModified === 0)) {
       // Cloud is newer or no local data - pull
+      console.log('[CloudSync] Pulling from cloud...');
       setMessage('Loading from cloud...');
       const data = await loadFromGoogleDrive();
+      console.log('[CloudSync] Loaded data:', data ? `${(data.statements as unknown[])?.length} statements` : 'null');
       if (data) {
         const { statements: loadedStmts, mappings } = parseCloudData(data);
         setLocalModifiedTime(Date.now());
@@ -217,11 +247,12 @@ export function CloudSync({ statements, userMappings, onDataLoaded }: CloudSyncP
       } else {
         // No cloud data, nothing to do
         setStatus('success');
-        setMessage('In sync');
+        setMessage('No cloud data');
         setTimeout(() => setStatus('idle'), 2000);
       }
     } else if (syncStatus === 'local' && statements.length > 0) {
       // Local is newer - push
+      console.log('[CloudSync] Pushing to cloud...');
       setMessage('Saving to cloud...');
       const data = serializeStatements(statements, userMappings);
       const success = await saveToGoogleDrive(data);
@@ -237,6 +268,7 @@ export function CloudSync({ statements, userMappings, onDataLoaded }: CloudSyncP
       }
     } else {
       // Already in sync
+      console.log('[CloudSync] Already in sync');
       setStatus('success');
       setMessage('In sync');
       setTimeout(() => setStatus('idle'), 2000);

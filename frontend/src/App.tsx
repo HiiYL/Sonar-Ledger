@@ -10,6 +10,7 @@ import {
 import { TransactionTable } from './components/TransactionTable';
 import { FileSidebar } from './components/FileSidebar';
 import { CloudSync } from './components/CloudSync';
+import { JsonBackup } from './components/JsonBackup';
 import { parseStatement } from './lib/pdfParser';
 import {
   getCategoryTotals,
@@ -388,7 +389,34 @@ function App() {
   // Visible transactions only (excluding hidden) for charts and stats
   const visibleTransactions = allTransactions.filter((tx) => !tx.hidden);
   
-  const categoryTotals = getCategoryTotals(filteredStatements);
+  // Filter transactions by period for charts (when a period is selected)
+  const periodFilteredTransactions = useMemo(() => {
+    if (!periodFilter) return visibleTransactions;
+    
+    return visibleTransactions.filter((tx) => {
+      const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      const txMonth = `${monthNames[tx.date.getMonth()]} ${tx.date.getFullYear().toString().slice(-2)}`;
+      return txMonth === periodFilter;
+    });
+  }, [visibleTransactions, periodFilter]);
+  
+  // Use period-filtered transactions for category totals when period is selected
+  const categoryTotals = useMemo(() => {
+    if (!periodFilter) return getCategoryTotals(filteredStatements);
+    
+    // Calculate category totals from period-filtered transactions
+    const totals = new Map<string, number>();
+    for (const tx of periodFilteredTransactions) {
+      if (tx.amount < 0) { // Only expenses
+        const cat = tx.category || 'Other';
+        totals.set(cat, (totals.get(cat) || 0) + Math.abs(tx.amount));
+      }
+    }
+    return Array.from(totals.entries())
+      .map(([category, total]) => ({ category, total }))
+      .sort((a, b) => b.total - a.total);
+  }, [filteredStatements, periodFilter, periodFilteredTransactions]);
+  
   const stats = getTotalStats(filteredStatements);
 
   return (
@@ -454,6 +482,13 @@ function App() {
                 
                 {/* Cloud Sync */}
                 <CloudSync
+                  statements={statements}
+                  userMappings={getUserMappings()}
+                  onDataLoaded={handleCloudDataLoaded}
+                />
+                
+                {/* JSON Import/Export */}
+                <JsonBackup
                   statements={statements}
                   userMappings={getUserMappings()}
                   onDataLoaded={handleCloudDataLoaded}
@@ -564,17 +599,52 @@ function App() {
         )}
 
         {statements.length === 0 ? (
-          <div className="max-w-xl mx-auto">
-            <FileUpload
-              onFilesSelected={handleFilesSelected}
-              isLoading={isLoading}
-            />
-            <div className="mt-8 text-center text-sm text-gray-500">
-              <p className="font-medium mb-2">Privacy First</p>
-              <p>
-                All processing happens in your browser. Your files never leave
-                your device.
-              </p>
+          <div className="max-w-4xl mx-auto">
+            <div className="flex flex-col md:flex-row items-start gap-6">
+              <div className="flex-1">
+                <FileUpload
+                  onFilesSelected={handleFilesSelected}
+                  isLoading={isLoading}
+                />
+                <div className="mt-8 text-sm text-gray-500">
+                  <p className="font-medium mb-2 text-center md:text-left">Privacy First</p>
+                  <p className="text-center md:text-left">
+                    All processing happens in your browser. Your files never leave
+                    your device.
+                  </p>
+                </div>
+              </div>
+              <div className="md:w-72 w-full md:self-stretch flex flex-col gap-4">
+                {/* Google Drive Sync */}
+                <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm flex flex-col gap-2">
+                  <div className="text-sm font-medium text-gray-900">
+                    Sync with Google Drive
+                  </div>
+                  <p className="text-xs text-gray-500">
+                    Load existing data or back up to your own Drive.
+                  </p>
+                  <CloudSync
+                    statements={statements}
+                    userMappings={getUserMappings()}
+                    onDataLoaded={handleCloudDataLoaded}
+                  />
+                </div>
+                
+                {/* JSON Import/Export */}
+                <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm flex flex-col gap-2">
+                  <div className="text-sm font-medium text-gray-900">
+                    Import / Export JSON
+                  </div>
+                  <p className="text-xs text-gray-500">
+                    Load from or save to a local JSON backup file.
+                  </p>
+                  <JsonBackup
+                    statements={statements}
+                    userMappings={getUserMappings()}
+                    onDataLoaded={handleCloudDataLoaded}
+                  />
+                </div>
+              </div>
             </div>
           </div>
         ) : (
@@ -619,14 +689,19 @@ function App() {
                       data={categoryTotals} 
                       onCategoryClick={setCategoryFilter}
                       selectedCategory={categoryFilter}
+                      periodFilter={periodFilter}
                     />
                   </div>
 
                   <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                     <div className="lg:col-span-2">
-                      <NetFlowTrend transactions={visibleTransactions} />
+                      <NetFlowTrend 
+                        transactions={visibleTransactions}
+                        selectedPeriod={periodFilter}
+                        onPeriodClick={setPeriodFilter}
+                      />
                     </div>
-                    <ExpenseInsights transactions={visibleTransactions} />
+                    <ExpenseInsights transactions={periodFilteredTransactions} />
                   </div>
 
                   {/* Transactions */}

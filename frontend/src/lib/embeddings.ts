@@ -509,6 +509,20 @@ export function getUserMappings(): Map<string, string> {
   return new Map(userDefinedMappings);
 }
 
+export async function replaceUserMappings(newMappings: Map<string, string>): Promise<void> {
+  userDefinedMappings = new Map(newMappings);
+  userMappingEmbeddings.clear();
+
+  if (extractor) {
+    for (const [description, category] of userDefinedMappings) {
+      const embedding = await getEmbedding(description);
+      userMappingEmbeddings.set(description, { category, embedding });
+    }
+  }
+
+  await saveUserMappings();
+}
+
 /**
  * Clear all user-defined category mappings
  */

@@ -200,9 +200,10 @@ interface CategoryChartProps {
   data: { category: string; total: number }[];
   onCategoryClick?: (category: string) => void;
   selectedCategory?: string;
+  periodFilter?: string;
 }
 
-export function CategoryPieChart({ data, onCategoryClick, selectedCategory }: CategoryChartProps) {
+export function CategoryPieChart({ data, onCategoryClick, selectedCategory, periodFilter }: CategoryChartProps) {
   // First, merge any "Other" categories together
   const mergedData = new Map<string, number>();
   for (const item of data) {
@@ -236,7 +237,14 @@ export function CategoryPieChart({ data, onCategoryClick, selectedCategory }: Ca
   return (
     <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
       <div className="flex items-center justify-between mb-4">
-        <h3 className="text-lg font-semibold">Spending by Category</h3>
+        <div className="flex items-center gap-2">
+          <h3 className="text-lg font-semibold">Spending by Category</h3>
+          {periodFilter && (
+            <span className="px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full text-xs font-medium">
+              {periodFilter}
+            </span>
+          )}
+        </div>
         {selectedCategory && (
           <button
             onClick={() => onCategoryClick?.('')}
@@ -497,9 +505,11 @@ export function ExpenseInsights({ transactions }: ExpenseInsightsProps) {
 
 interface NetFlowTrendProps {
   transactions: Transaction[];
+  selectedPeriod?: string;
+  onPeriodClick?: (period: string) => void;
 }
 
-export function NetFlowTrend({ transactions }: NetFlowTrendProps) {
+export function NetFlowTrend({ transactions, selectedPeriod, onPeriodClick }: NetFlowTrendProps) {
   const [grouping, setGrouping] = useState<TimeGrouping>('month');
   
   const chartData = groupTransactions(transactions, grouping);
@@ -511,10 +521,27 @@ export function NetFlowTrend({ transactions }: NetFlowTrendProps) {
     return { ...d, cumulative };
   });
 
+  const handleClick = (data: { label: string }) => {
+    if (onPeriodClick) {
+      onPeriodClick(selectedPeriod === data.label ? '' : data.label);
+    }
+  };
+
   return (
     <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
       <div className="flex items-center justify-between mb-4">
-        <h3 className="text-lg font-semibold">Net Flow & Cumulative Savings</h3>
+        <div className="flex items-center gap-2">
+          <h3 className="text-lg font-semibold">Net Flow & Cumulative Savings</h3>
+          {selectedPeriod && (
+            <button
+              onClick={() => onPeriodClick?.('')}
+              className="flex items-center gap-1 px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full text-xs font-medium hover:bg-blue-200"
+            >
+              {selectedPeriod}
+              <span>×</span>
+            </button>
+          )}
+        </div>
         <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
           {(['day', 'week', 'month'] as TimeGrouping[]).map((g) => (
             <button
@@ -532,7 +559,10 @@ export function NetFlowTrend({ transactions }: NetFlowTrendProps) {
         </div>
       </div>
       <ResponsiveContainer width="100%" height={300}>
-        <AreaChart data={cumulativeData}>
+        <AreaChart 
+          data={cumulativeData}
+          onClick={(e) => e?.activeLabel && handleClick({ label: e.activeLabel as string })}
+        >
           <defs>
             <linearGradient id="colorCumulative" x1="0" y1="0" x2="0" y2="1">
               <stop offset="5%" stopColor="#22c55e" stopOpacity={0.3}/>
@@ -556,6 +586,7 @@ export function NetFlowTrend({ transactions }: NetFlowTrendProps) {
             strokeWidth={2}
             fill="url(#colorCumulative)"
             name="Cumulative"
+            style={{ cursor: 'pointer' }}
           />
           <Line
             type="monotone"
@@ -564,6 +595,7 @@ export function NetFlowTrend({ transactions }: NetFlowTrendProps) {
             strokeWidth={2}
             dot={{ fill: '#3b82f6', r: 3 }}
             name="Net Flow"
+            style={{ cursor: 'pointer' }}
           />
           <Legend />
         </AreaChart>

@@ -387,19 +387,33 @@ export type ConflictResolution = 'local' | 'cloud' | 'none';
  * Returns: 'local' if local is newer, 'cloud' if cloud is newer, 'none' if in sync
  */
 export async function checkSyncStatus(): Promise<ConflictResolution> {
-  if (!accessToken) return 'none';
+  if (!accessToken) {
+    console.log('[GoogleDrive] checkSyncStatus: no access token');
+    return 'none';
+  }
   
   const localTime = getLocalModifiedTime();
   const cloudTime = await getCloudModifiedTime();
   
+  console.log('[GoogleDrive] checkSyncStatus:', { localTime, cloudTime, localDate: new Date(localTime).toISOString(), cloudDate: cloudTime ? new Date(cloudTime).toISOString() : 'none' });
+  
   // 5 second buffer to avoid race conditions
   const BUFFER_MS = 5000;
   
+  // If cloud has data but local doesn't, pull from cloud
+  if (cloudTime > 0 && localTime === 0) {
+    console.log('[GoogleDrive] Cloud has data, local is empty -> cloud');
+    return 'cloud';
+  }
+  
   if (localTime > cloudTime + BUFFER_MS) {
+    console.log('[GoogleDrive] Local is newer -> local');
     return 'local'; // Local is newer, should push to cloud
   } else if (cloudTime > localTime + BUFFER_MS) {
+    console.log('[GoogleDrive] Cloud is newer -> cloud');
     return 'cloud'; // Cloud is newer, should pull from cloud
   }
   
+  console.log('[GoogleDrive] In sync -> none');
   return 'none'; // In sync
 }
