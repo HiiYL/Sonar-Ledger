@@ -32,6 +32,7 @@ import {
   getUserMappings,
   type ModelLoadProgress,
 } from './lib/embeddings';
+import { generateDemoData, isDemoMode } from './lib/demoData';
 
 type AICategorizationChange = {
   id: string;
@@ -238,6 +239,17 @@ function App() {
 
     async function hydrate() {
       try {
+        // Check for demo mode first
+        if (isDemoMode()) {
+          const demoStatements = generateDemoData();
+          if (!isCancelled) {
+            setStatements(demoStatements);
+            setSelectedFiles(new Set(demoStatements.map((s) => s.filename)));
+            setIsHydrated(true);
+          }
+          return;
+        }
+
         const persisted = await loadPersistedStatements();
         if (isCancelled) return;
 
@@ -419,8 +431,18 @@ function App() {
   
   const stats = getTotalStats(filteredStatements);
 
+  const isDemo = isDemoMode();
+
   return (
     <div className="min-h-screen bg-gray-50">
+      {/* Demo Mode Banner */}
+      {isDemo && (
+        <div className="bg-gradient-to-r from-purple-600 to-blue-600 text-white text-center py-2 px-4 text-sm">
+          <span className="font-medium">🎭 Demo Mode</span> — Viewing sample data. 
+          <a href="/" className="underline ml-2 hover:text-purple-200">Exit demo</a>
+        </div>
+      )}
+      
       <header className="bg-white border-b border-gray-200">
         <div className="max-w-7xl mx-auto px-4 py-6">
           <div className="flex items-center justify-between">
@@ -644,6 +666,19 @@ function App() {
                     onDataLoaded={handleCloudDataLoaded}
                   />
                 </div>
+                
+                {/* Try Demo */}
+                <a
+                  href="?demo"
+                  className="bg-gradient-to-r from-purple-500 to-blue-500 text-white rounded-xl p-4 shadow-sm flex flex-col gap-2 hover:from-purple-600 hover:to-blue-600 transition-all"
+                >
+                  <div className="text-sm font-medium">
+                    🎭 Try Demo
+                  </div>
+                  <p className="text-xs text-purple-100">
+                    Explore with sample data — no upload needed.
+                  </p>
+                </a>
               </div>
             </div>
           </div>

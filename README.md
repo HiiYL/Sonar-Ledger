@@ -9,6 +9,8 @@
 <img width="1509" height="857" alt="Screenshot 2025-12-03 at 12 48 54 AM" src="https://github.com/user-attachments/assets/280fcaa5-b1d9-42fc-a6cf-77ae510b1406" />
 
 
+**Try with sample data:** https://hiiyl.github.io/Sonar-Ledger/?demo
+
 ## Features
 
 ### 📊 Interactive Dashboard
