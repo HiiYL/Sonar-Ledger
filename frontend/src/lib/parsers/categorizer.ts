@@ -165,12 +165,7 @@ export function categorizeTransaction(description: string, vendor?: string): str
       desc.includes('mbk') || desc.includes('giro')) {
     return 'Transfers';
   }
-  
-  // NETS/Debit transactions without clear category
-  if (desc.includes('nets debit')) {
-    return 'Other Spending';
-  }
-  
+
   return 'Other';
 }
 

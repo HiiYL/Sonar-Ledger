@@ -24,9 +24,11 @@ import {
 import {
   initializeEmbeddings,
   isModelReady,
+  precomputeTransactionEmbeddings,
+  categorizeWithEmbeddings,
+  categorizeWithEmbeddingsFast,
   type ModelLoadProgress,
 } from './lib/embeddings';
-import { categorizeTransactionSmart } from './lib/parsers/categorizer';
 
 type AICategorizationChange = {
   id: string;
@@ -75,6 +77,20 @@ function App() {
       });
   }, []);
 
+  // Pre-compute embeddings for all transactions in background when model is ready
+  useEffect(() => {
+    if (modelStatus !== 'ready' || statements.length === 0) return;
+    
+    const allTx = statements.flatMap((s) => 
+      s.transactions.map((tx) => ({ description: tx.description, vendor: tx.vendor }))
+    );
+    
+    // Run in background without blocking UI
+    precomputeTransactionEmbeddings(allTx).catch((err) => {
+      console.error('Failed to precompute embeddings:', err);
+    });
+  }, [modelStatus, statements]);
+
   // Re-categorize all transactions using the embedding model
   const handleRecategorize = useCallback(async () => {
     if (!isModelReady()) return;
@@ -114,31 +130,69 @@ function App() {
     }));
 
     const changes: AICategorizationChange[] = [];
-
+    
+    // OPTIMIZATION: Process in batches for better performance
+    const BATCH_SIZE = 20;
+    let processedCount = 0;
+    
+    // First pass: use cached embeddings (instant)
+    for (const { stmtIndex, txIndex } of targets) {
+      const tx = updatedStatements[stmtIndex].transactions[txIndex];
+      const previousCategory = tx.category ?? 'Other';
+      
+      // Try fast path with cached embedding
+      const fastResult = categorizeWithEmbeddingsFast(tx.description, tx.vendor);
+      
+      if (fastResult && fastResult.confidence >= EMBEDDING_CONFIDENCE_THRESHOLD && fastResult.category !== previousCategory) {
+        tx.category = fastResult.category;
+        tx.categorySource = 'ai';
+        changes.push({
+          id: `${updatedStatements[stmtIndex].filename}-${txIndex}-${tx.date.toISOString()}`,
+          statementFilename: updatedStatements[stmtIndex].filename,
+          description: tx.description,
+          vendor: tx.vendor,
+          amount: tx.amount,
+          date: tx.date,
+          previousCategory,
+          newCategory: fastResult.category,
+          method: 'embedding',
+          confidence: fastResult.confidence,
+        });
+      }
+      
+      processedCount++;
+    }
+    
+    // Update progress after fast pass
+    setAiProgress({ processed: processedCount, total: targets.length, currentDescription: 'Fast pass complete' });
+    
+    // Second pass: compute missing embeddings
+    let needsCompute = 0;
     for (let i = 0; i < targets.length; i++) {
       const { stmtIndex, txIndex } = targets[i];
       const tx = updatedStatements[stmtIndex].transactions[txIndex];
+      
+      // Skip if already processed in fast pass (category changed)
+      if (tx.categorySource === 'ai') continue;
+      
       const previousCategory = tx.category ?? 'Other';
-
-      // Update progress with current description - use setTimeout to force UI update
-      await new Promise<void>((resolve) => {
-        setAiProgress({ 
-          processed: i, 
-          total: targets.length, 
-          currentDescription: tx.description.substring(0, 50) 
+      
+      // Update progress periodically
+      if (needsCompute % BATCH_SIZE === 0) {
+        await new Promise<void>((resolve) => {
+          setAiProgress({ 
+            processed: processedCount + needsCompute, 
+            total: targets.length + needsCompute, 
+            currentDescription: tx.description.substring(0, 40) 
+          });
+          setTimeout(resolve, 0); // Minimal delay, just yield to UI
         });
-        // Small delay to allow React to re-render
-        setTimeout(resolve, 10);
-      });
+      }
 
       try {
-        const result = await categorizeTransactionSmart(tx.description, tx.vendor);
-        const shouldApply =
-          result.method === 'embedding' &&
-          result.confidence >= EMBEDDING_CONFIDENCE_THRESHOLD &&
-          result.category !== previousCategory;
-
-        if (shouldApply) {
+        const result = await categorizeWithEmbeddings(tx.description, tx.vendor);
+        
+        if (result.confidence >= EMBEDDING_CONFIDENCE_THRESHOLD && result.category !== previousCategory) {
           tx.category = result.category;
           tx.categorySource = 'ai';
           changes.push({
@@ -150,16 +204,18 @@ function App() {
             date: tx.date,
             previousCategory,
             newCategory: result.category,
-            method: result.method,
+            method: 'embedding',
             confidence: result.confidence,
           });
         }
       } catch (err) {
         console.error('Failed to categorize transaction', tx.description, err);
       }
-
-      setAiProgress({ processed: i + 1, total: targets.length });
+      
+      needsCompute++;
     }
+    
+    setAiProgress({ processed: targets.length, total: targets.length });
 
     setStatements(updatedStatements);
     setAiChanges(changes);

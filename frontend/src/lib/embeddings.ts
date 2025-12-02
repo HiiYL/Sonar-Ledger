@@ -181,42 +181,49 @@ export type ModelLoadProgress = {
 export async function initializeEmbeddings(
   onProgress?: (progress: ModelLoadProgress) => void
 ): Promise<void> {
-  if (categoryEmbeddings) return; // Already initialized
-  if (initPromise) return initPromise; // Already initializing
+  // Return existing promise if already initializing
+  if (initPromise) return initPromise;
+  if (extractor) return;
   
   isInitializing = true;
+  
   initPromise = (async () => {
     try {
       onProgress?.({ stage: 'downloading', progress: 0, message: 'Downloading AI model...' });
       
-      // Load the model - this downloads ~45MB on first run, then cached
-      extractor = await pipeline(
-        'feature-extraction',
-        'Xenova/all-MiniLM-L6-v2',
-        { progress_callback: (progress: { status: string; progress?: number; file?: string }) => {
-          if (progress.status === 'progress' && progress.progress !== undefined) {
-            onProgress?.({
-              stage: 'downloading',
-              progress: Math.round(progress.progress),
-              message: `Downloading model: ${Math.round(progress.progress)}%`,
+      // Load the model with progress callback
+      extractor = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', {
+        progress_callback: (progressData: { status: string; progress?: number }) => {
+          if (progressData.status === 'progress' && progressData.progress !== undefined) {
+            onProgress?.({ 
+              stage: 'downloading', 
+              progress: progressData.progress, 
+              message: `Downloading: ${Math.round(progressData.progress)}%` 
             });
-          } else if (progress.status === 'done') {
-            onProgress?.({ stage: 'loading', progress: 100, message: 'Model downloaded, loading...' });
           }
-        }}
-      );
+        }
+      });
+      
+      onProgress?.({ stage: 'loading', progress: 100, message: 'Model loaded, loading cache...' });
+      
+      // Load user-defined mappings from storage
+      await loadUserMappings();
+      
+      // Load cached transaction embeddings from IndexedDB
+      const cachedCount = await loadCachedEmbeddings();
+      console.log(`Loaded ${cachedCount} cached transaction embeddings`);
       
       onProgress?.({ stage: 'computing_embeddings', progress: 0, message: 'Computing category embeddings...' });
       
-      // Pre-compute embeddings for all category exemplars
+      // Compute category embeddings
       categoryEmbeddings = new Map();
-      const categories = Object.entries(CATEGORY_EXEMPLARS);
+      const categories = Object.keys(CATEGORY_EXEMPLARS);
       
       for (let i = 0; i < categories.length; i++) {
-        const [category, exemplars] = categories[i];
-        // Combine all exemplars into one text for a single embedding per category
-        const combinedText = exemplars.join('. ');
-        const embedding = await getEmbedding(combinedText);
+        const category = categories[i];
+        const exemplars = CATEGORY_EXEMPLARS[category];
+        const exemplarText = exemplars.join(' ');
+        const embedding = await getEmbedding(exemplarText);
         categoryEmbeddings.set(category, embedding);
         
         onProgress?.({
@@ -225,9 +232,6 @@ export async function initializeEmbeddings(
           message: `Computing embeddings: ${i + 1}/${categories.length}`,
         });
       }
-      
-      // Load user-defined mappings from storage
-      await loadUserMappings();
       
       onProgress?.({ stage: 'ready', progress: 100, message: 'AI model ready' });
       console.log('Embedding model initialized with', categoryEmbeddings.size, 'categories');
@@ -264,37 +268,20 @@ function cosineSimilarity(a: Float32Array, b: Float32Array): number {
 }
 
 /**
- * Categorize a transaction description using semantic similarity
- * Returns the best matching category and confidence score
- * 
- * Priority:
- * 1. Exact match in user-defined mappings (confidence = 1.0)
- * 2. Similarity to user-defined mapping embeddings (boosted score)
- * 3. Similarity to category exemplar embeddings
+ * Categorize using a pre-computed embedding (sync, fast)
  */
-export async function categorizeWithEmbeddings(
-  description: string,
-  vendor?: string
-): Promise<{ category: string; confidence: number }> {
-  if (!categoryEmbeddings || !extractor) {
-    // Fallback if model not loaded
+function categorizeWithEmbeddingSync(
+  embedding: Float32Array
+): { category: string; confidence: number } {
+  if (!categoryEmbeddings) {
     return { category: 'Other', confidence: 0 };
   }
-  
-  // Check for exact match in user-defined mappings first
-  if (userDefinedMappings.has(description)) {
-    return { category: userDefinedMappings.get(description)!, confidence: 1.0 };
-  }
-  
-  // Combine description and vendor for better context
-  const text = vendor ? `${description} ${vendor}` : description;
-  const embedding = await getEmbedding(text);
   
   let bestCategory = 'Other';
   let bestScore = -1;
   
   // Check user-defined mapping embeddings first (with a boost)
-  const USER_MAPPING_BOOST = 0.25; // Boost user mappings significantly
+  const USER_MAPPING_BOOST = 0.25;
   for (const [, { category, embedding: userEmbedding }] of userMappingEmbeddings) {
     const score = cosineSimilarity(embedding, userEmbedding) + USER_MAPPING_BOOST;
     if (score > bestScore) {
@@ -313,13 +300,73 @@ export async function categorizeWithEmbeddings(
   }
   
   // If confidence is too low, return "Other"
-  // Threshold of 0.8 ensures we only apply high-confidence changes
   const CONFIDENCE_THRESHOLD = 0.8;
   if (bestScore < CONFIDENCE_THRESHOLD) {
     return { category: 'Other', confidence: bestScore };
   }
   
   return { category: bestCategory, confidence: Math.min(bestScore, 1.0) };
+}
+
+/**
+ * Categorize a transaction description using semantic similarity
+ * Returns the best matching category and confidence score
+ * 
+ * Priority:
+ * 1. Exact match in user-defined mappings (confidence = 1.0)
+ * 2. Similarity to user-defined mapping embeddings (boosted score)
+ * 3. Similarity to category exemplar embeddings
+ */
+export async function categorizeWithEmbeddings(
+  description: string,
+  vendor?: string
+): Promise<{ category: string; confidence: number }> {
+  if (!categoryEmbeddings || !extractor) {
+    return { category: 'Other', confidence: 0 };
+  }
+  
+  // Check for exact match in user-defined mappings first
+  if (userDefinedMappings.has(description)) {
+    return { category: userDefinedMappings.get(description)!, confidence: 1.0 };
+  }
+  
+  // Try to use cached embedding first (fast path)
+  const key = vendor ? `${description}|${vendor}` : description;
+  let embedding = transactionEmbeddingCache.get(key);
+  
+  if (!embedding) {
+    // Compute and cache embedding
+    const text = vendor ? `${description} ${vendor}` : description;
+    embedding = await getEmbedding(text);
+    transactionEmbeddingCache.set(key, embedding);
+    saveTxEmbedding(key, embedding);
+  }
+  
+  return categorizeWithEmbeddingSync(embedding);
+}
+
+/**
+ * Fast categorization using only cached embeddings (sync)
+ * Returns null if embedding not cached
+ */
+export function categorizeWithEmbeddingsFast(
+  description: string,
+  vendor?: string
+): { category: string; confidence: number } | null {
+  if (!categoryEmbeddings) return null;
+  
+  // Check for exact match in user-defined mappings first
+  if (userDefinedMappings.has(description)) {
+    return { category: userDefinedMappings.get(description)!, confidence: 1.0 };
+  }
+  
+  // Try cached embedding
+  const key = vendor ? `${description}|${vendor}` : description;
+  const embedding = transactionEmbeddingCache.get(key);
+  
+  if (!embedding) return null;
+  
+  return categorizeWithEmbeddingSync(embedding);
 }
 
 /**
@@ -472,44 +519,192 @@ export async function clearUserMappings(): Promise<void> {
 }
 
 // ============================================================================
-// Transaction Embedding Cache & Similarity Search
+// Transaction Embedding Cache & Similarity Search (with IndexedDB persistence)
 // ============================================================================
 
-// Cache of transaction embeddings: key = description, value = embedding
+const TX_EMBEDDINGS_DB_NAME = 'sonar-tx-embeddings';
+const TX_EMBEDDINGS_STORE_NAME = 'embeddings';
+const TX_EMBEDDINGS_DB_VERSION = 1;
+
+// In-memory cache of transaction embeddings: key = description|vendor, value = embedding
 const transactionEmbeddingCache: Map<string, Float32Array> = new Map();
 
 /**
+ * Open the transaction embeddings IndexedDB
+ */
+function openTxEmbeddingsDB(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(TX_EMBEDDINGS_DB_NAME, TX_EMBEDDINGS_DB_VERSION);
+    
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve(request.result);
+    
+    request.onupgradeneeded = (event) => {
+      const db = (event.target as IDBOpenDBRequest).result;
+      if (!db.objectStoreNames.contains(TX_EMBEDDINGS_STORE_NAME)) {
+        db.createObjectStore(TX_EMBEDDINGS_STORE_NAME);
+      }
+    };
+  });
+}
+
+/**
+ * Load all cached embeddings from IndexedDB into memory
+ */
+export async function loadCachedEmbeddings(): Promise<number> {
+  try {
+    const db = await openTxEmbeddingsDB();
+    
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(TX_EMBEDDINGS_STORE_NAME, 'readonly');
+      const store = tx.objectStore(TX_EMBEDDINGS_STORE_NAME);
+      const request = store.openCursor();
+      let count = 0;
+      
+      request.onerror = () => reject(request.error);
+      request.onsuccess = (event) => {
+        const cursor = (event.target as IDBRequest<IDBCursorWithValue>).result;
+        if (cursor) {
+          const key = cursor.key as string;
+          const value = cursor.value as number[];
+          transactionEmbeddingCache.set(key, new Float32Array(value));
+          count++;
+          cursor.continue();
+        } else {
+          db.close();
+          resolve(count);
+        }
+      };
+    });
+  } catch (err) {
+    console.error('Failed to load cached embeddings:', err);
+    return 0;
+  }
+}
+
+/**
+ * Save a single embedding to IndexedDB
+ */
+async function saveTxEmbedding(key: string, embedding: Float32Array): Promise<void> {
+  try {
+    const db = await openTxEmbeddingsDB();
+    
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(TX_EMBEDDINGS_STORE_NAME, 'readwrite');
+      const store = tx.objectStore(TX_EMBEDDINGS_STORE_NAME);
+      // Store as regular array for IndexedDB compatibility
+      const request = store.put(Array.from(embedding), key);
+      
+      request.onerror = () => {
+        db.close();
+        reject(request.error);
+      };
+      request.onsuccess = () => {
+        db.close();
+        resolve();
+      };
+    });
+  } catch (err) {
+    console.error('Failed to save embedding:', err);
+  }
+}
+
+/**
+ * Clear all cached embeddings from IndexedDB
+ */
+export async function clearCachedEmbeddings(): Promise<void> {
+  try {
+    const db = await openTxEmbeddingsDB();
+    
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(TX_EMBEDDINGS_STORE_NAME, 'readwrite');
+      const store = tx.objectStore(TX_EMBEDDINGS_STORE_NAME);
+      const request = store.clear();
+      
+      request.onerror = () => {
+        db.close();
+        reject(request.error);
+      };
+      request.onsuccess = () => {
+        transactionEmbeddingCache.clear();
+        db.close();
+        resolve();
+      };
+    });
+  } catch (err) {
+    console.error('Failed to clear cached embeddings:', err);
+  }
+}
+
+/**
+ * Get the number of cached embeddings
+ */
+export function getCachedEmbeddingsCount(): number {
+  return transactionEmbeddingCache.size;
+}
+
+/**
  * Get or compute embedding for a transaction description
+ * Uses in-memory cache backed by IndexedDB for persistence
  */
 export async function getTransactionEmbedding(description: string, vendor?: string): Promise<Float32Array | null> {
   if (!extractor) return null;
   
   const key = vendor ? `${description}|${vendor}` : description;
   
+  // Check in-memory cache first
   if (transactionEmbeddingCache.has(key)) {
     return transactionEmbeddingCache.get(key)!;
   }
   
+  // Compute new embedding
   const text = vendor ? `${description} ${vendor}` : description;
   const embedding = await getEmbedding(text);
+  
+  // Store in memory cache
   transactionEmbeddingCache.set(key, embedding);
+  
+  // Persist to IndexedDB (fire and forget)
+  saveTxEmbedding(key, embedding);
   
   return embedding;
 }
 
 /**
- * Find transactions similar to a given one
+ * Get embedding cache key for a transaction
+ */
+function getTxCacheKey(description: string, vendor?: string): string {
+  return vendor ? `${description}|${vendor}` : description;
+}
+
+/**
+ * Check if an embedding is already cached (sync, no computation)
+ */
+export function hasEmbeddingCached(description: string, vendor?: string): boolean {
+  const key = getTxCacheKey(description, vendor);
+  return transactionEmbeddingCache.has(key);
+}
+
+/**
+ * Get cached embedding synchronously (returns null if not cached)
+ */
+function getCachedEmbedding(description: string, vendor?: string): Float32Array | null {
+  const key = getTxCacheKey(description, vendor);
+  return transactionEmbeddingCache.get(key) || null;
+}
+
+/**
+ * Find transactions similar to a given one - FAST version
+ * Only uses already-cached embeddings (no computation during search)
  * Returns indices and similarity scores for transactions above the threshold
  */
-export async function findSimilarTransactions(
+export function findSimilarTransactionsFast(
   targetDescription: string,
   targetVendor: string | undefined,
   allTransactions: Array<{ description: string; vendor?: string; hidden?: boolean }>,
   threshold: number = 0.85
-): Promise<Array<{ index: number; similarity: number }>> {
-  if (!extractor) return [];
-  
-  const targetEmbedding = await getTransactionEmbedding(targetDescription, targetVendor);
+): Array<{ index: number; similarity: number }> {
+  const targetEmbedding = getCachedEmbedding(targetDescription, targetVendor);
   if (!targetEmbedding) return [];
   
   const results: Array<{ index: number; similarity: number }> = [];
@@ -523,7 +718,8 @@ export async function findSimilarTransactions(
     // Skip the exact same transaction
     if (tx.description === targetDescription && tx.vendor === targetVendor) continue;
     
-    const txEmbedding = await getTransactionEmbedding(tx.description, tx.vendor);
+    // Only use cached embeddings (skip if not cached)
+    const txEmbedding = getCachedEmbedding(tx.description, tx.vendor);
     if (!txEmbedding) continue;
     
     const similarity = cosineSimilarity(targetEmbedding, txEmbedding);
@@ -540,8 +736,72 @@ export async function findSimilarTransactions(
 }
 
 /**
+ * Find transactions similar to a given one - computes missing embeddings
+ * Use findSimilarTransactionsFast for instant results with cached data
+ */
+export async function findSimilarTransactions(
+  targetDescription: string,
+  targetVendor: string | undefined,
+  allTransactions: Array<{ description: string; vendor?: string; hidden?: boolean }>,
+  threshold: number = 0.85
+): Promise<Array<{ index: number; similarity: number }>> {
+  if (!extractor) return [];
+  
+  // First ensure target embedding exists
+  const targetEmbedding = await getTransactionEmbedding(targetDescription, targetVendor);
+  if (!targetEmbedding) return [];
+  
+  // Try fast path first (only cached)
+  const fastResults = findSimilarTransactionsFast(targetDescription, targetVendor, allTransactions, threshold);
+  
+  // If we have good coverage (>80% cached), return fast results
+  const cachedCount = allTransactions.filter(tx => hasEmbeddingCached(tx.description, tx.vendor)).length;
+  if (cachedCount > allTransactions.length * 0.8) {
+    return fastResults;
+  }
+  
+  // Otherwise compute missing embeddings in background
+  const results: Array<{ index: number; similarity: number }> = [...fastResults];
+  const processedKeys = new Set(fastResults.map(r => {
+    const tx = allTransactions[r.index];
+    return getTxCacheKey(tx.description, tx.vendor);
+  }));
+  
+  // Process uncached transactions
+  const BATCH_SIZE = 10;
+  let batchCount = 0;
+  
+  for (let i = 0; i < allTransactions.length; i++) {
+    const tx = allTransactions[i];
+    if (tx.hidden) continue;
+    if (tx.description === targetDescription && tx.vendor === targetVendor) continue;
+    
+    const key = getTxCacheKey(tx.description, tx.vendor);
+    if (processedKeys.has(key) || transactionEmbeddingCache.has(key)) continue;
+    
+    const txEmbedding = await getTransactionEmbedding(tx.description, tx.vendor);
+    if (!txEmbedding) continue;
+    
+    const similarity = cosineSimilarity(targetEmbedding, txEmbedding);
+    
+    if (similarity >= threshold) {
+      results.push({ index: i, similarity });
+    }
+    
+    batchCount++;
+    if (batchCount % BATCH_SIZE === 0) {
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+  }
+  
+  results.sort((a, b) => b.similarity - a.similarity);
+  return results;
+}
+
+/**
  * Pre-compute embeddings for all transactions (call after model loads)
- * Returns progress updates via callback
+ * Runs in background with yields to avoid blocking UI
+ * Skips already-cached embeddings for efficiency
  */
 export async function precomputeTransactionEmbeddings(
   transactions: Array<{ description: string; vendor?: string }>,
@@ -549,9 +809,28 @@ export async function precomputeTransactionEmbeddings(
 ): Promise<void> {
   if (!extractor) return;
   
+  const BATCH_SIZE = 5; // Small batches for smoother UI
+  let computed = 0;
+  
   for (let i = 0; i < transactions.length; i++) {
     const tx = transactions[i];
+    const key = tx.vendor ? `${tx.description}|${tx.vendor}` : tx.description;
+    
+    // Skip if already cached
+    if (transactionEmbeddingCache.has(key)) {
+      onProgress?.(i + 1, transactions.length);
+      continue;
+    }
+    
     await getTransactionEmbedding(tx.description, tx.vendor);
+    computed++;
     onProgress?.(i + 1, transactions.length);
+    
+    // Yield to UI every batch
+    if (computed % BATCH_SIZE === 0) {
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
   }
+  
+  console.log(`Pre-computed ${computed} new embeddings (${transactions.length - computed} were cached)`);
 }

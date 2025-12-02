@@ -31,7 +31,10 @@ export function aggregateByMonth(statements: StatementInfo[]): MonthlySummary[] 
     let totalOutflow = 0;
 
     for (const tx of transactions) {
-      // Skip internal transfers for totals
+      // Skip internal transfers for totals (both income and expenses)
+      // This includes Credit Card Payments which appear as:
+      // - Negative on bank statements (paying the card)
+      // - Positive on credit card statements (receiving the payment)
       if (isInternalTransfer(tx)) {
         continue;
       }

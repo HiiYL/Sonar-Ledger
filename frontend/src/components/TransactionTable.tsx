@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react';
 import { Search, Download, ChevronDown, ChevronUp, Calendar, RefreshCw, Edit2, Check, X, EyeOff, Eye, Users } from 'lucide-react';
 import type { Transaction } from '../types';
-import { learnUserCategory, isModelReady, findSimilarTransactions } from '../lib/embeddings';
+import { learnUserCategory, isModelReady, findSimilarTransactionsFast, findSimilarTransactions, getTransactionEmbedding, getCachedEmbeddingsCount } from '../lib/embeddings';
 
 // Detect recurring transactions (same vendor/description, similar amounts, multiple occurrences)
 interface RecurringPattern {
@@ -538,45 +538,74 @@ export function TransactionTable({
                         onClick={async () => {
                           const oldCategory = tx.category || 'Other';
                           if (editingCategory !== oldCategory) {
-                            // Learn from user correction
+                            // Capture values before any state changes
+                            const txDescription = tx.description;
+                            const txVendor = tx.vendor;
+                            const newCategory = editingCategory;
+                            
+                            // Close the editor first
+                            setEditingTxKey(null);
+                            
+                            // Learn and find similar BEFORE updating parent (to avoid re-render issues)
                             if (isModelReady()) {
-                              await learnUserCategory(tx.description, editingCategory);
+                              // Learn from user correction
+                              learnUserCategory(txDescription, newCategory);
                               
                               // Find similar transactions
                               setFindingSimilar(true);
-                              const similar = await findSimilarTransactions(
-                                tx.description,
-                                tx.vendor,
-                                transactions,
-                                0.85 // High similarity threshold
-                              );
-                              setFindingSimilar(false);
                               
-                              if (similar.length > 0) {
-                                // Show modal to apply to similar transactions
-                                setSimilarTxModal({
-                                  show: true,
-                                  sourceDescription: tx.description,
-                                  sourceVendor: tx.vendor,
-                                  newCategory: editingCategory,
-                                  similarIndices: similar,
-                                  selectedIndices: new Set(similar.map(s => s.index)),
-                                });
+                              try {
+                                // Ensure target embedding is cached
+                                await getTransactionEmbedding(txDescription, txVendor);
+                                
+                                // Try fast path first
+                                let similar = findSimilarTransactionsFast(
+                                  txDescription,
+                                  txVendor,
+                                  transactions,
+                                  0.85
+                                );
+                                
+                                // If fast path found nothing and we have low cache coverage, use async version
+                                if (similar.length === 0 && getCachedEmbeddingsCount() < transactions.length * 0.5) {
+                                  console.log('Fast search found nothing, trying full search...');
+                                  similar = await findSimilarTransactions(
+                                    txDescription,
+                                    txVendor,
+                                    transactions,
+                                    0.85
+                                  );
+                                }
+                                
+                                console.log('Found similar:', similar.length);
+                                
+                                if (similar.length > 0) {
+                                  setSimilarTxModal({
+                                    show: true,
+                                    sourceDescription: txDescription,
+                                    sourceVendor: txVendor,
+                                    newCategory: newCategory,
+                                    similarIndices: similar,
+                                    selectedIndices: new Set(similar.map((s: { index: number }) => s.index)),
+                                  });
+                                }
+                              } catch (err) {
+                                console.error('Error finding similar:', err);
+                              } finally {
+                                setFindingSimilar(false);
                               }
                             }
-                            // Notify parent to update the transaction
-                            onCategoryUpdate?.(i, tx.description, editingCategory);
+                            
+                            // Now notify parent to update the transaction
+                            onCategoryUpdate?.(originalIndex, txDescription, newCategory);
+                          } else {
+                            setEditingTxKey(null);
                           }
-                          setEditingTxKey(null);
                         }}
                         className="p-0.5 text-green-600 hover:bg-green-100 rounded"
                         title="Save"
                       >
-                        {findingSimilar ? (
-                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                        ) : (
-                          <Check className="w-3.5 h-3.5" />
-                        )}
+                        <Check className="w-3.5 h-3.5" />
                       </button>
                       <button
                         onClick={() => setEditingTxKey(null)}
@@ -659,6 +688,14 @@ export function TransactionTable({
           </p>
         )}
       </div>
+
+      {/* Finding Similar Toast */}
+      {findingSimilar && (
+        <div className="fixed bottom-4 right-4 z-40 bg-blue-600 text-white px-4 py-2 rounded-lg shadow-lg flex items-center gap-2 text-sm">
+          <RefreshCw className="w-4 h-4 animate-spin" />
+          Finding similar transactions...
+        </div>
+      )}
 
       {/* Similar Transactions Modal */}
       {similarTxModal?.show && (
